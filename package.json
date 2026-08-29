@@ -1,0 +1,22 @@
+{
+  "name": "prunella",
+  "module": "src/index.ts",
+  "type": "module",
+  "scripts": {
+    "lint": "biome check src/",
+    "format": "biome format --write src/"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/bun": "latest",
+    "ai": "^7.0.0"
+  },
+  "peerDependencies": {
+    "typescript": "^7.0.2",
+    "ai": "^7.0.0"
+  },
+  "dependencies": {
+    "@types/node": "^26.3.0",
+    "dedent": "^1.7.2"
+  }
+}
