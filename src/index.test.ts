@@ -12,16 +12,15 @@ function baseMessages(): ModelMessage[] {
 	];
 }
 
-test("prunes parts that match the policy and leaves others intact", () => {
-	const prunella = new Prunella(
-		baseMessages(),
-		{ hasRole: "assistant" },
-		{ recallDuration: { turns: 2 } },
-	);
+test("prunes parts that match the policy and leaves others intact", async () => {
+	const prunella = new Prunella({
+		pruningPolicy: { hasRole: "assistant" },
+	});
 
-	const { messages, tools } = prunella.prepare();
+	const { messages, tools } = await prunella.prepare({
+		messages: baseMessages(),
+	});
 
-	// The assistant text part is replaced by a placeholder.
 	const assistantContent = messages[1]?.content;
 	if (!Array.isArray(assistantContent))
 		throw new Error("expected array content");
@@ -31,23 +30,20 @@ test("prunes parts that match the policy and leaves others intact", () => {
 	}
 	expect(assistantPart.text.startsWith(PLACEHOLDER_PREFIX)).toBe(true);
 
-	// The user string content is untouched.
-	expect(messages[0]?.content).toBe("hello");
+	const userContent = messages[0]?.content;
+	if (!Array.isArray(userContent)) throw new Error("expected array content");
+	expect(userContent[0]).toEqual({ type: "text", text: "hello" });
 
-	// The recall tool is exposed to the model.
 	expect(tools).toHaveProperty("recall-pruned");
 });
 
-test("a recall request restores the pruned part", () => {
+test("placeholder is permanent after recall request", async () => {
 	const messages = baseMessages();
-	const recallPolicy = { recallDuration: { turns: 2 } } as const;
 
-	// First pass: prune, then read the pruneId out of the placeholder.
-	const firstPass = new Prunella(
-		messages,
-		{ hasRole: "assistant" },
-		recallPolicy,
-	).prepare();
+	const firstPass = await new Prunella({
+		pruningPolicy: { hasRole: "assistant" },
+	}).prepare({ messages });
+
 	const prunedContent = firstPass.messages[1]?.content;
 	if (!Array.isArray(prunedContent) || prunedContent[0]?.type !== "text") {
 		throw new Error("expected a pruned text part");
@@ -55,7 +51,6 @@ test("a recall request restores the pruned part", () => {
 	const pruneId = prunedContent[0].text.match(/pruneId "([a-f0-9]+)"/)?.[1];
 	expect(pruneId).toBeString();
 
-	// Second pass: append a recall request for that pruneId.
 	const withRecall: ModelMessage[] = [
 		...messages,
 		{
@@ -70,15 +65,34 @@ test("a recall request restores the pruned part", () => {
 			],
 		},
 	];
-	const secondPass = new Prunella(
-		withRecall,
-		{ hasRole: "assistant" },
-		recallPolicy,
-	).prepare();
 
-	const restoredContent = secondPass.messages[1]?.content;
-	if (!Array.isArray(restoredContent) || restoredContent[0]?.type !== "text") {
-		throw new Error("expected a restored text part");
+	const secondPass = await new Prunella({
+		pruningPolicy: { hasRole: "assistant" },
+	}).prepare({ messages: withRecall });
+
+	const stillPruned = secondPass.messages[1]?.content;
+	if (!Array.isArray(stillPruned) || stillPruned[0]?.type !== "text") {
+		throw new Error("expected a pruned text part");
 	}
-	expect(restoredContent[0].text).toBe("hi there");
+	expect(stillPruned[0].text.startsWith(PLACEHOLDER_PREFIX)).toBe(true);
+});
+
+test("recall tool returns original content", async () => {
+	const { tools, messages } = await new Prunella({
+		pruningPolicy: { hasRole: "assistant" },
+	}).prepare({ messages: baseMessages() });
+
+	const prunedContent = messages[1]?.content;
+	if (!Array.isArray(prunedContent) || prunedContent[0]?.type !== "text") {
+		throw new Error("expected a pruned text part");
+	}
+	const pruneId = prunedContent[0].text.match(/pruneId "([a-f0-9]+)"/)?.[1];
+	expect(pruneId).toBeString();
+
+	const recallTool = tools["recall-pruned"];
+	const result = await recallTool.execute({ pruneId }, {
+		toolCallId: "call-1",
+		messages: [],
+	} as unknown as Parameters<typeof recallTool.execute>[1]);
+	expect(result).toBe("hi there");
 });

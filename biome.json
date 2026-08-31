@@ -14,7 +14,16 @@
     "enabled": true,
     "indentStyle": "tab"
   },
-  "overrides": [
+  "overrides": [{
+    "include": ["**/*.ts"],
+    "linter": {
+        "rules": {
+          "style": {
+            "noNonNullAssertion": "off"
+          }
+        }
+      }
+  },
     {
       "include": ["**/*.test.ts", "test-utils.ts"],
       "linter": {
