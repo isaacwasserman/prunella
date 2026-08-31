@@ -1,0 +1,47 @@
+{
+  "name": "prunella",
+  "version": "0.1.0",
+  "description": "Policy-driven pruning of AI SDK conversation messages, with a recall tool to restore pruned parts",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/isaacwasserman/prunella.git"
+  },
+  "homepage": "https://github.com/isaacwasserman/prunella#readme",
+  "license": "MIT",
+  "type": "module",
+  "module": "src/index.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "prepare": "git config core.hooksPath .githooks",
+    "build": "bun run scripts/build.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check src/",
+    "format": "biome format --write src/"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@changesets/cli": "^2.30.0",
+    "@types/bun": "latest",
+    "@types/node": "^26.3.0",
+    "ai": "^7.0.0",
+    "typescript": "^5.7.0"
+  },
+  "peerDependencies": {
+    "ai": "^7.0.0"
+  },
+  "dependencies": {
+    "dedent": "^1.7.2"
+  }
+}
