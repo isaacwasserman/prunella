@@ -632,12 +632,14 @@ describe("edge cases: pruning + compaction interaction", () => {
 		});
 
 		await prunella.prepare({ messages, sessionId: "stable" });
-		const summaryIds1 = [...store.summaries.values()].map((s) => s.firstPartId);
+		const summaryIds1 = [...store.summaries.values()].map(
+			(s) => s.spans[0]!.firstPartId,
+		);
 
 		await prunella.prepare({ messages, sessionId: "stable" });
 		const summaryIds2 = [...store.summaries.values()]
 			.filter((s) => s.sessionId === "stable")
-			.map((s) => s.firstPartId);
+			.map((s) => s.spans[0]!.firstPartId);
 
 		for (const id of summaryIds1) {
 			expect(summaryIds2).toContain(id);
@@ -667,7 +669,7 @@ describe("edge cases: pruning + compaction interaction", () => {
 		const base = longConversation(10);
 		await prunella.prepare({ messages: base, sessionId: "append" });
 		const firstPartIds = [...store.summaries.values()].map(
-			(s) => s.firstPartId,
+			(s) => s.spans[0]!.firstPartId,
 		);
 
 		const extended: ModelMessage[] = [
@@ -685,7 +687,7 @@ describe("edge cases: pruning + compaction interaction", () => {
 
 		for (const id of firstPartIds) {
 			const still = [...store.summaries.values()].find(
-				(s) => s.firstPartId === id,
+				(s) => s.spans[0]?.firstPartId === id,
 			);
 			expect(still).toBeDefined();
 		}

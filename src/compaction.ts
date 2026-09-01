@@ -4,6 +4,7 @@ import {
 	Output,
 	generateText,
 	jsonSchema,
+	tool,
 } from "ai";
 import dedent from "dedent";
 import { nanoid } from "nanoid";
@@ -16,15 +17,11 @@ import {
 
 const SYSTEM_PROMPT =
 	"You are part of a chat history compaction system. Your job is to concisely summarize a section of a message transcript, including only the most salient parts.";
-const COMBINED_SUMMARY_SENTINEL =
-	"This summary has been combined with subsequent summaries.";
 
 export type CompactorSummary = {
 	id: string;
 	sessionId: string;
-	firstPartId: string;
-	lastPartId: string;
-	collapsed: boolean;
+	spans: { firstPartId: string; lastPartId: string }[];
 	text: string;
 };
 
@@ -60,10 +57,10 @@ export function summaryToMessage(summary: CompactorSummary): ModelMessage {
 			{
 				type: "text",
 				text: dedent`
-                <Summary>
-                    ${summary.text}
-                </Summary>
-            `,
+					<Summary id="${summary.id}">
+						${summary.text}
+					</Summary>
+				`,
 			},
 		],
 	};
@@ -110,6 +107,21 @@ export function spanIsSubspan({
 			subLastIndex.partIndex <= supLastIndex.partIndex);
 
 	return startsAfter && endsBefore;
+}
+
+export function partIsCoveredBySummary({
+	partId,
+	summary,
+	messages,
+}: {
+	partId: string;
+	summary: CompactorSummary;
+	messages: IdentifiableMessage[];
+}): boolean {
+	const singlePartSpan: PartSpan = { firstPartId: partId, lastPartId: partId };
+	return summary.spans.some((span) =>
+		spanIsSubspan({ sub: singlePartSpan, sup: span, messages }),
+	);
 }
 
 export function getNextPartId({
@@ -195,7 +207,7 @@ export class Compactor {
 					lastPartId: partId,
 				};
 				const isCovered = existingSummaries.some((s) =>
-					spanIsSubspan({ sub: singlePartSpan, sup: s, messages }),
+					partIsCoveredBySummary({ partId, summary: s, messages }),
 				);
 
 				if (isCompactable && !isCovered) {
@@ -242,12 +254,18 @@ export class Compactor {
 		span: PartSpan;
 		messages: IdentifiableMessage[];
 		summaries: CompactorSummary[];
-	}): CompactorSummary | undefined {
-		return summaries.find(
-			(s) =>
-				s.firstPartId === partId &&
-				spanIsSubspan({ sub: s, sup: span, messages }),
-		);
+	}): { summary: CompactorSummary; matchedSpan: PartSpan } | undefined {
+		for (const s of summaries) {
+			for (const spanEntry of s.spans) {
+				if (
+					spanEntry.firstPartId === partId &&
+					spanIsSubspan({ sub: spanEntry, sup: span, messages })
+				) {
+					return { summary: s, matchedSpan: spanEntry };
+				}
+			}
+		}
+		return undefined;
 	}
 
 	private fullSpan(messages: IdentifiableMessage[]): PartSpan {
@@ -287,17 +305,21 @@ export class Compactor {
 			}
 		};
 
+		const emittedSummaryIds = new Set<string>();
 		while (i < partIds.length) {
-			const summary = this.findSummaryAt({
+			const match = this.findSummaryAt({
 				partId: partIds[i]!,
 				span: resolvedSpan,
 				messages,
 				summaries: existingSummaries,
 			});
-			if (summary) {
+			if (match) {
 				flushRawParts();
-				result.push(summaryToMessage(summary));
-				i = partIds.indexOf(summary.lastPartId) + 1;
+				if (!emittedSummaryIds.has(match.summary.id)) {
+					result.push(summaryToMessage(match.summary));
+					emittedSummaryIds.add(match.summary.id);
+				}
+				i = partIds.indexOf(match.matchedSpan.lastPartId) + 1;
 			} else {
 				if (rawStartIndex === null) rawStartIndex = i;
 				i++;
@@ -316,22 +338,15 @@ export class Compactor {
 		messages: IdentifiableMessage[];
 	}): CompactorSummary[] {
 		return summaries.toSorted((a, b) => {
-			const aIndex = getPartIndex({ messages, id: a.firstPartId });
-			const bIndex = getPartIndex({ messages, id: b.firstPartId });
+			const aIndex = getPartIndex({ messages, id: a.spans[0]!.firstPartId });
+			const bIndex = getPartIndex({ messages, id: b.spans[0]!.firstPartId });
 			if (aIndex.messageIndex !== bIndex.messageIndex)
 				return aIndex.messageIndex - bIndex.messageIndex;
 			return aIndex.partIndex - bIndex.partIndex;
 		});
 	}
 
-	private createTranscript({
-		spans,
-		messages: allMessages,
-	}: { spans: PartSpan[]; messages: IdentifiableMessage[] }): string {
-		const messages = spans.flatMap((span) =>
-			this.getPartRange({ span, messages: allMessages }),
-		);
-
+	private serializeMessages(messages: IdentifiableMessage[]) {
 		const serializeMessagePart = (
 			part: IdentifiableMessage["parts"][number],
 		) => {
@@ -362,6 +377,17 @@ export class Compactor {
 			.join("\n");
 	}
 
+	private createTranscriptFromSpans({
+		spans,
+		messages: allMessages,
+	}: { spans: PartSpan[]; messages: IdentifiableMessage[] }): string {
+		const messages = spans.flatMap((span) =>
+			this.getPartRange({ span, messages: allMessages }),
+		);
+
+		return this.serializeMessages(messages);
+	}
+
 	private async summarizeSpans({
 		spans,
 		messages,
@@ -374,7 +400,7 @@ export class Compactor {
 			instructions: SYSTEM_PROMPT,
 			prompt: dedent`
                 <Transcript>
-                    ${this.createTranscript({ spans, messages })}
+                    ${this.createTranscriptFromSpans({ spans, messages })}
                 </Transcript>
 
                 Compact the chat transcript above into a concise summary.
@@ -465,9 +491,7 @@ export class Compactor {
 				this.policy.compactionThreshold
 		) {
 			iterations++;
-			const [combinableSummary1, combinableSummary2] = existingSummaries.filter(
-				(summary) => !summary.collapsed,
-			);
+			const [combinableSummary1, combinableSummary2] = existingSummaries;
 			const uncompactedSpans = this.getUncompactedSpans({
 				messages: messagesWithIds,
 				existingSummaries,
@@ -507,56 +531,48 @@ export class Compactor {
 					summary: {
 						id: nanoid(),
 						sessionId,
-						firstPartId: uncompactedSpans[lastGroupStart]!.firstPartId,
-						lastPartId:
-							uncompactedSpans[uncompactedSpans.length - 1]!.lastPartId,
+						spans: [
+							{
+								firstPartId: uncompactedSpans[lastGroupStart]!.firstPartId,
+								lastPartId:
+									uncompactedSpans[uncompactedSpans.length - 1]!.lastPartId,
+							},
+						],
 						text: summaryText,
-						collapsed: false,
 					},
 				});
 			} else if (combinableSummary1 && combinableSummary2) {
-				// Combine first and second summaries
 				const combinedSummaryText = await this.summarizeSummaries({
 					summaries: [combinableSummary1.text, combinableSummary2.text],
 				});
+				const lastSpan1 =
+					combinableSummary1.spans[combinableSummary1.spans.length - 1]!;
+				const firstSpan2 = combinableSummary2.spans[0]!;
 				const consecutive =
 					getNextPartId({
-						partId: combinableSummary1.lastPartId,
+						partId: lastSpan1.lastPartId,
 						messages: messagesWithIds,
-					}) === combinableSummary2.firstPartId;
-				if (consecutive) {
-					await this.store.createSummary({
-						summary: {
-							id: nanoid(),
-							sessionId,
-							firstPartId: combinableSummary1.firstPartId,
-							lastPartId: combinableSummary2.lastPartId,
-							text: combinedSummaryText,
-							collapsed: false,
-						},
-					});
-					await this.store.deleteSummary({
-						id: combinableSummary1.id,
-					});
-					await this.store.deleteSummary({
-						id: combinableSummary2.id,
-					});
-				} else {
-					await this.store.updateSummary({
-						summary: {
-							...combinableSummary1,
-							text: COMBINED_SUMMARY_SENTINEL,
-							collapsed: true,
-						},
-					});
-					await this.store.updateSummary({
-						summary: {
-							...combinableSummary2,
-							text: combinedSummaryText,
-							collapsed: false,
-						},
-					});
-				}
+					}) === firstSpan2.firstPartId;
+				const mergedSpans: PartSpan[] = consecutive
+					? [
+							...combinableSummary1.spans.slice(0, -1),
+							{
+								firstPartId: lastSpan1.firstPartId,
+								lastPartId: firstSpan2.lastPartId,
+							},
+							...combinableSummary2.spans.slice(1),
+						]
+					: [...combinableSummary1.spans, ...combinableSummary2.spans];
+				await this.store.createSummary({
+					summary: {
+						id: nanoid(),
+						sessionId,
+						spans: mergedSpans,
+						text: combinedSummaryText,
+					},
+				});
+				await this.store.deleteSummary({ id: combinableSummary1.id });
+				await this.store.deleteSummary({ id: combinableSummary2.id });
 			} else {
 				break;
 			}
@@ -568,6 +584,36 @@ export class Compactor {
 			});
 		}
 
-		return { summaries: existingSummaries };
+		return {
+			summaries: existingSummaries,
+			tools: {
+				recallSummarized: tool({
+					description:
+						"Returns the original unsummarized content for a given summaryId.",
+					inputSchema: jsonSchema<{ summaryId: string }>({
+						type: "object",
+						properties: {
+							summaryId: {
+								type: "string",
+							},
+						},
+						required: ["summaryId"],
+					}),
+					execute: (input) => {
+						const summary = existingSummaries.find(
+							(summary) => summary.id === input.summaryId,
+						);
+						if (!summary) {
+							throw new Error(`No summary found with id "${input.summaryId}"`);
+						}
+						const transcript = this.createTranscriptFromSpans({
+							spans: summary.spans,
+							messages: messagesWithIds,
+						});
+						return transcript;
+					},
+				}),
+			},
+		};
 	}
 }
