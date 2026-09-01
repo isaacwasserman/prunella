@@ -19,6 +19,7 @@ export class Prunella {
 			store: CompactorStore;
 			model: LanguageModel;
 			policy: CompactionOptions;
+			summaryPrompt?: string;
 		};
 	}) {
 		this.pruner = new Pruner({
