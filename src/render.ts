@@ -28,31 +28,27 @@ export function renderMessages({
 	mask: Set<string>;
 	summaries: CompactorSummary[];
 }): ModelMessage[] {
-	const activeSummaries = summaries.filter((s) => !s.collapsed);
-
 	const summaryByFirstPartId = new Map<string, CompactorSummary>();
 	const coveredByCompaction = new Set<string>();
-	for (const summary of activeSummaries) {
-		summaryByFirstPartId.set(summary.firstPartId, summary);
-		for (const id of getPartIdsInSpan({
-			span: {
-				firstPartId: summary.firstPartId,
-				lastPartId: summary.lastPartId,
-			},
-			messages,
-		})) {
-			coveredByCompaction.add(id);
+	for (const summary of summaries) {
+		for (const span of summary.spans) {
+			summaryByFirstPartId.set(span.firstPartId, summary);
+			for (const id of getPartIdsInSpan({ span, messages })) {
+				coveredByCompaction.add(id);
+			}
 		}
 	}
 
 	const result: ModelMessage[] = [];
+	const emittedSummaries = new Set<string>();
 
 	for (const message of messages) {
 		const outputParts: ModelMessage["content"][number][] = [];
 
 		for (const part of message.parts) {
 			const summary = summaryByFirstPartId.get(part.id);
-			if (summary) {
+			if (summary && !emittedSummaries.has(summary.id)) {
+				emittedSummaries.add(summary.id);
 				if (outputParts.length > 0) {
 					result.push({
 						...message.raw,
