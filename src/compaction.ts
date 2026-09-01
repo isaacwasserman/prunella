@@ -154,15 +154,18 @@ export class Compactor {
 	private store: CompactorStore;
 	private model: LanguageModel;
 	private policy: Required<CompactionOptions>;
+	private summaryPrompt: string | undefined;
 
 	constructor({
 		store,
 		model,
 		policy,
+		summaryPrompt,
 	}: {
 		store: CompactorStore;
 		model: LanguageModel;
 		policy: CompactionOptions;
+		summaryPrompt?: string;
 	}) {
 		this.store = store;
 		this.model = model;
@@ -175,6 +178,7 @@ export class Compactor {
 			maxIterations: 3,
 			...policy,
 		};
+		this.summaryPrompt = summaryPrompt;
 	}
 
 	private getUncompactedSpans({
@@ -408,6 +412,8 @@ export class Compactor {
                 - Telegraphic style
                 - Shorthand
                 - Strictly shorter than original
+
+				${this.summaryPrompt ? `Additional instructions: ${this.summaryPrompt}` : ""}
             `,
 			output: Output.object({
 				schema: jsonSchema<{ summary: string }>({
@@ -442,6 +448,8 @@ export class Compactor {
                 - Telegraphic style
                 - Shorthand
                 - Size of a single summary
+
+				${this.summaryPrompt ? `Additional instructions: ${this.summaryPrompt}` : ""}
             `,
 			output: Output.object({
 				schema: jsonSchema<{ summary: string }>({
