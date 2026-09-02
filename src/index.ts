@@ -6,17 +6,18 @@ import {
 } from "./compaction";
 import { Pruner, type PruningPolicy } from "./pruning";
 import { renderMessages } from "./render";
+import type { RuntimeConfig } from "./runtime-config";
 import { attachIdsToMessages } from "./utils";
 
-export class Prunella {
+export class Prunella<TRuntimeConfig extends RuntimeConfig = undefined> {
 	private pruner: Pruner;
-	private compactor: Compactor | undefined;
+	private compactor: Compactor<TRuntimeConfig> | undefined;
 
 	constructor(args: {
 		pruningPolicy: PruningPolicy;
 		compaction?: {
 			enabled: true;
-			store: CompactorStore;
+			store: CompactorStore<TRuntimeConfig>;
 			model: LanguageModel;
 			policy: CompactionOptions;
 			summaryPrompt?: string;
@@ -26,10 +27,11 @@ export class Prunella {
 			pruningPolicy: args.pruningPolicy,
 		});
 		this.compactor = args.compaction
-			? new Compactor({
+			? new Compactor<TRuntimeConfig>({
 					store: args.compaction.store,
 					model: args.compaction.model,
-					policy: args.compaction.policy,
+					options: args.compaction.policy,
+					summaryPrompt: args.compaction.summaryPrompt,
 				})
 			: undefined;
 	}
@@ -37,7 +39,8 @@ export class Prunella {
 	public async prepare({
 		messages,
 		sessionId,
-	}: { messages: ModelMessage[]; sessionId?: string }) {
+		config,
+	}: { messages: ModelMessage[]; sessionId: string; config: TRuntimeConfig }) {
 		const messagesWithIds = attachIdsToMessages(messages);
 
 		const { mask, tools } = this.pruner.prepare({
@@ -47,7 +50,8 @@ export class Prunella {
 		const { summaries } = this.compactor
 			? await this.compactor.prepare({
 					messages,
-					sessionId: sessionId!,
+					sessionId: sessionId,
+					config,
 				})
 			: { summaries: [] as import("./compaction").CompactorSummary[] };
 

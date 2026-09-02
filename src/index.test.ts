@@ -19,6 +19,8 @@ test("prunes parts that match the policy and leaves others intact", async () => 
 
 	const { messages, tools } = await prunella.prepare({
 		messages: baseMessages(),
+		sessionId: "test",
+		config: undefined,
 	});
 
 	const assistantContent = messages[1]?.content;
@@ -42,7 +44,7 @@ test("placeholder is permanent after recall request", async () => {
 
 	const firstPass = await new Prunella({
 		pruningPolicy: { hasRole: "assistant" },
-	}).prepare({ messages });
+	}).prepare({ messages, sessionId: "test", config: undefined });
 
 	const prunedContent = firstPass.messages[1]?.content;
 	if (!Array.isArray(prunedContent) || prunedContent[0]?.type !== "text") {
@@ -68,7 +70,7 @@ test("placeholder is permanent after recall request", async () => {
 
 	const secondPass = await new Prunella({
 		pruningPolicy: { hasRole: "assistant" },
-	}).prepare({ messages: withRecall });
+	}).prepare({ messages: withRecall, sessionId: "test", config: undefined });
 
 	const stillPruned = secondPass.messages[1]?.content;
 	if (!Array.isArray(stillPruned) || stillPruned[0]?.type !== "text") {
@@ -80,7 +82,11 @@ test("placeholder is permanent after recall request", async () => {
 test("recall tool returns original content", async () => {
 	const { tools, messages } = await new Prunella({
 		pruningPolicy: { hasRole: "assistant" },
-	}).prepare({ messages: baseMessages() });
+	}).prepare({
+		messages: baseMessages(),
+		sessionId: "test",
+		config: undefined,
+	});
 
 	const prunedContent = messages[1]?.content;
 	if (!Array.isArray(prunedContent) || prunedContent[0]?.type !== "text") {

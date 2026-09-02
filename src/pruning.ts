@@ -1,4 +1,5 @@
 import { type ModelMessage, type ToolCallPart, jsonSchema, tool } from "ai";
+import type { RuntimeConfig } from "./runtime-config";
 import {
 	type IdentifiableMessage,
 	getMessageByIndex,
