@@ -1,6 +1,6 @@
 {
   "name": "prunella",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Policy-driven pruning of AI SDK conversation messages, with a recall tool to restore pruned parts",
   "repository": {
     "type": "git",
