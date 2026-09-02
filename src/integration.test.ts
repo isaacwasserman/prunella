@@ -115,7 +115,11 @@ describe("edge cases: empty and minimal inputs", () => {
 		const prunella = new Prunella({
 			pruningPolicy: { hasRole: "assistant" },
 		});
-		const { messages, tools } = await prunella.prepare({ messages: [] });
+		const { messages, tools } = await prunella.prepare({
+			messages: [],
+			sessionId: "test",
+			config: undefined,
+		});
 		expect(messages).toEqual([]);
 		expect(tools).toHaveProperty("recall-pruned");
 	});
@@ -126,6 +130,8 @@ describe("edge cases: empty and minimal inputs", () => {
 		});
 		const { messages } = await prunella.prepare({
 			messages: [{ role: "user", content: "hello" }],
+			sessionId: "test",
+			config: undefined,
 		});
 		expect(messages).toHaveLength(1);
 		expect(messages[0]!.role).toBe("user");
@@ -137,6 +143,8 @@ describe("edge cases: empty and minimal inputs", () => {
 		});
 		const { messages } = await prunella.prepare({
 			messages: [{ role: "system", content: "system prompt" }],
+			sessionId: "test",
+			config: undefined,
 		});
 		expect(messages).toHaveLength(1);
 	});
@@ -151,7 +159,11 @@ describe("edge cases: pruning", () => {
 			{ role: "user", content: "hi" },
 			{ role: "assistant", content: [{ type: "text", text: "hello" }] },
 		];
-		const { messages } = await prunella.prepare({ messages: input });
+		const { messages } = await prunella.prepare({
+			messages: input,
+			sessionId: "test",
+			config: undefined,
+		});
 		const text = extractText(messages);
 		expect(text).not.toContain(PLACEHOLDER_PREFIX);
 		expect(text).toContain("hello");
@@ -166,7 +178,11 @@ describe("edge cases: pruning", () => {
 			{ role: "user", content: "hi" },
 			{ role: "assistant", content: [{ type: "text", text: "bye" }] },
 		];
-		const { messages } = await prunella.prepare({ messages: input });
+		const { messages } = await prunella.prepare({
+			messages: input,
+			sessionId: "test",
+			config: undefined,
+		});
 		const text = extractText(messages);
 		expect(text).toContain(PLACEHOLDER_PREFIX);
 		expect(text).not.toContain("bye");
@@ -190,7 +206,11 @@ describe("edge cases: pruning", () => {
 				],
 			},
 		];
-		const { messages } = await prunella.prepare({ messages: input });
+		const { messages } = await prunella.prepare({
+			messages: input,
+			sessionId: "test",
+			config: undefined,
+		});
 		const content = messages[0]!.content;
 		if (!Array.isArray(content)) throw new Error("expected array");
 		const textParts = content.filter(
@@ -221,7 +241,11 @@ describe("edge cases: pruning", () => {
 				],
 			},
 		];
-		const { messages } = await prunella.prepare({ messages: input });
+		const { messages } = await prunella.prepare({
+			messages: input,
+			sessionId: "test",
+			config: undefined,
+		});
 		const content = messages[0]!.content;
 		if (!Array.isArray(content)) throw new Error("expected array");
 		expect(content[0]!.type).toBe("tool-call");
@@ -239,6 +263,8 @@ describe("edge cases: pruning", () => {
 					content: [{ type: "text", text: "hello" }],
 				},
 			],
+			sessionId: "test",
+			config: undefined,
 		});
 		const result = await tools["recall-pruned"].execute(
 			{ pruneId: "nonexistent" },
@@ -276,7 +302,11 @@ describe("edge cases: pruning", () => {
 				],
 			},
 		];
-		const { messages, tools } = await prunella.prepare({ messages: input });
+		const { messages, tools } = await prunella.prepare({
+			messages: input,
+			sessionId: "test",
+			config: undefined,
+		});
 		const content = messages[0]!.content;
 		if (!Array.isArray(content)) throw new Error("expected array");
 		const placeholder = content.find(
@@ -310,7 +340,11 @@ describe("edge cases: pruning", () => {
 			{ role: "assistant", content: [{ type: "text", text: "a2" }] },
 			{ role: "user", content: "third" },
 		];
-		const { messages } = await prunella.prepare({ messages: input });
+		const { messages } = await prunella.prepare({
+			messages: input,
+			sessionId: "test",
+			config: undefined,
+		});
 		const text = extractText(messages);
 		expect(text).toContain("third");
 		expect(text).toContain("second");
@@ -344,7 +378,11 @@ describe("edge cases: pruning", () => {
 			},
 			{ role: "user", content: "latest" },
 		];
-		const { messages } = await prunella.prepare({ messages: input });
+		const { messages } = await prunella.prepare({
+			messages: input,
+			sessionId: "test",
+			config: undefined,
+		});
 		const text = extractText(messages);
 		expect(text).toContain(PLACEHOLDER_PREFIX);
 		expect(text).toContain("latest");
@@ -361,8 +399,16 @@ describe("edge cases: part ID stability", () => {
 			{ role: "assistant", content: [{ type: "text", text: "hello" }] },
 		];
 
-		const r1 = await prunella.prepare({ messages: input });
-		const r2 = await prunella.prepare({ messages: input });
+		const r1 = await prunella.prepare({
+			messages: input,
+			sessionId: "test",
+			config: undefined,
+		});
+		const r2 = await prunella.prepare({
+			messages: input,
+			sessionId: "test",
+			config: undefined,
+		});
 
 		const id1 = pruneIdFrom(extractText(r1.messages));
 		const id2 = pruneIdFrom(extractText(r2.messages));
@@ -383,8 +429,16 @@ describe("edge cases: part ID stability", () => {
 			{ role: "assistant", content: [{ type: "text", text: "sure" }] },
 		];
 
-		const r1 = await prunella.prepare({ messages: base });
-		const r2 = await prunella.prepare({ messages: extended });
+		const r1 = await prunella.prepare({
+			messages: base,
+			sessionId: "test",
+			config: undefined,
+		});
+		const r2 = await prunella.prepare({
+			messages: extended,
+			sessionId: "test",
+			config: undefined,
+		});
 
 		const id1 = pruneIdFrom(extractText(r1.messages));
 		const id2 = pruneIdFrom(
@@ -415,6 +469,7 @@ describe("edge cases: compaction", () => {
 		await prunella.prepare({
 			messages: longConversation(3),
 			sessionId: "no-compact",
+			config: undefined,
 		});
 		expect(store.summaries.size).toBe(0);
 	});
@@ -438,6 +493,7 @@ describe("edge cases: compaction", () => {
 		await prunella.prepare({
 			messages: longConversation(5),
 			sessionId: "no-compact-2",
+			config: undefined,
 		});
 		expect(store.summaries.size).toBe(0);
 	});
@@ -463,6 +519,7 @@ describe("edge cases: compaction", () => {
 		const { messages: rendered } = await prunella.prepare({
 			messages,
 			sessionId: "sys-check",
+			config: undefined,
 		});
 
 		const systemMsg = rendered.find((m) => m.role === "system");
@@ -493,12 +550,12 @@ describe("edge cases: compaction", () => {
 			},
 		});
 
-		await p1.prepare({ messages, sessionId: "sess-A" });
+		await p1.prepare({ messages, sessionId: "sess-A", config: undefined });
 		const countA = [...store.summaries.values()].filter(
 			(s) => s.sessionId === "sess-A",
 		).length;
 
-		await p1.prepare({ messages, sessionId: "sess-B" });
+		await p1.prepare({ messages, sessionId: "sess-B", config: undefined });
 		const countB = [...store.summaries.values()].filter(
 			(s) => s.sessionId === "sess-B",
 		).length;
@@ -536,12 +593,12 @@ describe("edge cases: compaction", () => {
 			},
 		});
 
-		await prunella.prepare({ messages, sessionId: "reuse" });
+		await prunella.prepare({ messages, sessionId: "reuse", config: undefined });
 		const countAfterFirst = store.summaries.size;
 		expect(countAfterFirst).toBeGreaterThan(0);
 
 		const callsBefore = model.doGenerateCalls.length;
-		await prunella.prepare({ messages, sessionId: "reuse" });
+		await prunella.prepare({ messages, sessionId: "reuse", config: undefined });
 		const callsAfter = model.doGenerateCalls.length;
 
 		expect(callsAfter - callsBefore).toBeLessThanOrEqual(countAfterFirst);
@@ -565,6 +622,7 @@ describe("edge cases: compaction", () => {
 		await prunella.prepare({
 			messages: longConversation(5),
 			sessionId: "zero-iter",
+			config: undefined,
 		});
 		expect(store.summaries.size).toBe(0);
 	});
@@ -590,6 +648,7 @@ describe("edge cases: pruning + compaction interaction", () => {
 		const { messages: rendered } = await prunella.prepare({
 			messages,
 			sessionId: "overlap",
+			config: undefined,
 		});
 
 		const summaryCount = rendered.filter(
@@ -631,12 +690,20 @@ describe("edge cases: pruning + compaction interaction", () => {
 			},
 		});
 
-		await prunella.prepare({ messages, sessionId: "stable" });
+		await prunella.prepare({
+			messages,
+			sessionId: "stable",
+			config: undefined,
+		});
 		const summaryIds1 = [...store.summaries.values()].map(
 			(s) => s.spans[0]!.firstPartId,
 		);
 
-		await prunella.prepare({ messages, sessionId: "stable" });
+		await prunella.prepare({
+			messages,
+			sessionId: "stable",
+			config: undefined,
+		});
 		const summaryIds2 = [...store.summaries.values()]
 			.filter((s) => s.sessionId === "stable")
 			.map((s) => s.spans[0]!.firstPartId);
@@ -667,7 +734,11 @@ describe("edge cases: pruning + compaction interaction", () => {
 		});
 
 		const base = longConversation(10);
-		await prunella.prepare({ messages: base, sessionId: "append" });
+		await prunella.prepare({
+			messages: base,
+			sessionId: "append",
+			config: undefined,
+		});
 		const firstPartIds = [...store.summaries.values()].map(
 			(s) => s.spans[0]!.firstPartId,
 		);
@@ -682,7 +753,11 @@ describe("edge cases: pruning + compaction interaction", () => {
 		];
 
 		await expect(
-			prunella.prepare({ messages: extended, sessionId: "append" }),
+			prunella.prepare({
+				messages: extended,
+				sessionId: "append",
+				config: undefined,
+			}),
 		).resolves.toBeDefined();
 
 		for (const id of firstPartIds) {
@@ -701,6 +776,8 @@ describe("edge cases: render step", () => {
 		});
 		const { messages } = await prunella.prepare({
 			messages: [{ role: "user", content: "hello world" }],
+			sessionId: "test",
+			config: undefined,
 		});
 		const content = messages[0]!.content;
 		expect(Array.isArray(content)).toBe(true);
@@ -724,6 +801,8 @@ describe("edge cases: render step", () => {
 					],
 				},
 			],
+			sessionId: "test",
+			config: undefined,
 		});
 		const assistant = messages.find((m) => m.role === "assistant");
 		expect(assistant).toBeDefined();
@@ -752,6 +831,8 @@ describe("edge cases: render step", () => {
 					],
 				},
 			],
+			sessionId: "test",
+			config: undefined,
 		});
 		const content = messages.find((m) => m.role === "assistant")!.content;
 		if (!Array.isArray(content)) throw new Error("expected array");
@@ -786,11 +867,81 @@ describe("edge cases: render step", () => {
 			{ role: "user", content: "u" },
 			{ role: "assistant", content: [{ type: "text", text: "a" }] },
 		];
-		const { messages } = await prunella.prepare({ messages: input });
+		const { messages } = await prunella.prepare({
+			messages: input,
+			sessionId: "test",
+			config: undefined,
+		});
 		expect(messages.map((m) => m.role)).toEqual([
 			"system",
 			"user",
 			"assistant",
 		]);
+	});
+});
+
+describe("runtime config", () => {
+	type TestConfig = { tenantId: string };
+
+	function createConfigAwareStore(): CompactorStore<TestConfig> & {
+		summaries: Map<string, CompactorSummary>;
+		receivedConfigs: TestConfig[];
+	} {
+		const summaries = new Map<string, CompactorSummary>();
+		const receivedConfigs: TestConfig[] = [];
+		return {
+			summaries,
+			receivedConfigs,
+			createSummary: async ({ summary, config }) => {
+				receivedConfigs.push(config);
+				summaries.set(summary.id, summary);
+			},
+			getSummary: async ({ id, config }) => {
+				receivedConfigs.push(config);
+				const s = summaries.get(id);
+				if (!s) throw new Error(`Summary ${id} not found`);
+				return s;
+			},
+			getSummariesForSession: async ({ sessionId, config }) => {
+				receivedConfigs.push(config);
+				return [...summaries.values()].filter((s) => s.sessionId === sessionId);
+			},
+			updateSummary: async ({ summary, config }) => {
+				receivedConfigs.push(config);
+				summaries.set(summary.id, summary);
+			},
+			deleteSummary: async ({ id, config }) => {
+				receivedConfigs.push(config);
+				summaries.delete(id);
+			},
+		};
+	}
+
+	test("config is forwarded to every store method", async () => {
+		const store = createConfigAwareStore();
+		const prunella = new Prunella<TestConfig>({
+			pruningPolicy: { hasRole: "assistant" },
+			compaction: {
+				enabled: true,
+				store,
+				model: makeMockModel(),
+				policy: {
+					compactionThreshold: 500,
+					minCompactableSpan: 100,
+					maxIterations: 3,
+				},
+			},
+		});
+
+		await prunella.prepare({
+			messages: longConversation(10),
+			sessionId: "tenant-test",
+			config: { tenantId: "t-123" },
+		});
+
+		expect(store.receivedConfigs.length).toBeGreaterThan(0);
+		for (const cfg of store.receivedConfigs) {
+			expect(cfg.tenantId).toBe("t-123");
+		}
 	});
 });

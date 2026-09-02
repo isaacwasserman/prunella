@@ -1,3 +1,4 @@
+import type { StandardSchemaV1 } from "@standard-schema/spec";
 import {
 	type LanguageModel,
 	type ModelMessage,
@@ -9,6 +10,7 @@ import {
 import dedent from "dedent";
 import { nanoid } from "nanoid";
 import { estimateTokenCount } from "tokenx";
+import type { RuntimeConfig } from "./runtime-config";
 import {
 	type IdentifiableMessage,
 	attachIdsToMessages,
@@ -25,14 +27,29 @@ export type CompactorSummary = {
 	text: string;
 };
 
-export interface CompactorStore {
-	createSummary: (args: { summary: CompactorSummary }) => Promise<void>;
-	getSummary: (args: { id: string }) => Promise<CompactorSummary>;
-	getSummariesForSession: (args: { sessionId: string }) => Promise<
-		CompactorSummary[]
-	>;
-	updateSummary: (args: { summary: CompactorSummary }) => Promise<void>;
-	deleteSummary: (args: { id: string }) => Promise<void>;
+export interface CompactorStore<
+	TRuntimeConfig extends RuntimeConfig = undefined,
+> {
+	createSummary: (args: {
+		summary: CompactorSummary;
+		config: TRuntimeConfig;
+	}) => Promise<void>;
+	getSummary: (args: {
+		id: string;
+		config: TRuntimeConfig;
+	}) => Promise<CompactorSummary>;
+	getSummariesForSession: (args: {
+		sessionId: string;
+		config: TRuntimeConfig;
+	}) => Promise<CompactorSummary[]>;
+	updateSummary: (args: {
+		summary: CompactorSummary;
+		config: TRuntimeConfig;
+	}) => Promise<void>;
+	deleteSummary: (args: {
+		id: string;
+		config: TRuntimeConfig;
+	}) => Promise<void>;
 }
 
 export type CompactionOptions = {
@@ -150,33 +167,33 @@ export function getPartIdsInSpan({
 	return ids;
 }
 
-export class Compactor {
-	private store: CompactorStore;
+export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
+	private store: CompactorStore<TRuntimeConfig>;
 	private model: LanguageModel;
-	private policy: Required<CompactionOptions>;
+	private options: Required<CompactionOptions>;
 	private summaryPrompt: string | undefined;
 
 	constructor({
 		store,
 		model,
-		policy,
+		options,
 		summaryPrompt,
 	}: {
-		store: CompactorStore;
+		store: CompactorStore<TRuntimeConfig>;
 		model: LanguageModel;
-		policy: CompactionOptions;
+		options?: CompactionOptions;
 		summaryPrompt?: string;
 	}) {
 		this.store = store;
 		this.model = model;
-		this.policy = {
+		this.options = {
 			canCompact: ({ message }) => {
 				return message.role !== "system";
 			},
 			compactionThreshold: 80_000,
 			minCompactableSpan: 2000,
 			maxIterations: 3,
-			...policy,
+			...options,
 		};
 		this.summaryPrompt = summaryPrompt;
 	}
@@ -198,7 +215,7 @@ export class Compactor {
 			for (let pi = 0; pi < messages[mi]!.parts.length; pi++) {
 				const part = rawMessages[mi]!.content;
 				const resolvedPart = Array.isArray(part) ? part[pi]! : part;
-				const isCompactable = this.policy.canCompact({
+				const isCompactable = this.options.canCompact({
 					messages: rawMessages,
 					messageIndex: mi,
 					partIndex: pi,
@@ -206,10 +223,6 @@ export class Compactor {
 					part: resolvedPart,
 				});
 				const partId = messages[mi]!.parts[pi]!.id;
-				const singlePartSpan: PartSpan = {
-					firstPartId: partId,
-					lastPartId: partId,
-				};
 				const isCovered = existingSummaries.some((s) =>
 					partIsCoveredBySummary({ partId, summary: s, messages }),
 				);
@@ -469,7 +482,8 @@ export class Compactor {
 	public async prepare({
 		messages,
 		sessionId,
-	}: { messages: ModelMessage[]; sessionId: string }) {
+		config,
+	}: { messages: ModelMessage[]; sessionId: string; config: TRuntimeConfig }) {
 		const messagesWithIds = attachIdsToMessages(messages);
 
 		const estimateConversationTokens = async (
@@ -488,15 +502,16 @@ export class Compactor {
 		let existingSummaries = this.sortSummaries({
 			summaries: await this.store.getSummariesForSession({
 				sessionId,
+				config,
 			}),
 			messages: messagesWithIds,
 		});
 
 		let iterations = 0;
 		while (
-			iterations < this.policy.maxIterations &&
+			iterations < this.options.maxIterations &&
 			(await estimateConversationTokens(existingSummaries)) >
-				this.policy.compactionThreshold
+				this.options.compactionThreshold
 		) {
 			iterations++;
 			const [combinableSummary1, combinableSummary2] = existingSummaries;
@@ -516,7 +531,7 @@ export class Compactor {
 			}, 0);
 			if (
 				uncompactedSpans.length > 0 &&
-				uncompactedTokens >= this.policy.minCompactableSpan
+				uncompactedTokens >= this.options.minCompactableSpan
 			) {
 				// Compact spans
 				const summaryText = await this.summarizeSpans({
@@ -548,6 +563,7 @@ export class Compactor {
 						],
 						text: summaryText,
 					},
+					config,
 				});
 			} else if (combinableSummary1 && combinableSummary2) {
 				const combinedSummaryText = await this.summarizeSummaries({
@@ -578,15 +594,17 @@ export class Compactor {
 						spans: mergedSpans,
 						text: combinedSummaryText,
 					},
+					config,
 				});
-				await this.store.deleteSummary({ id: combinableSummary1.id });
-				await this.store.deleteSummary({ id: combinableSummary2.id });
+				await this.store.deleteSummary({ id: combinableSummary1.id, config });
+				await this.store.deleteSummary({ id: combinableSummary2.id, config });
 			} else {
 				break;
 			}
 			existingSummaries = this.sortSummaries({
 				summaries: await this.store.getSummariesForSession({
 					sessionId,
+					config,
 				}),
 				messages: messagesWithIds,
 			});
