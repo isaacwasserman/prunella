@@ -4,6 +4,7 @@ import {
 	Compactor,
 	type CompactorStore,
 } from "./compaction";
+import type { CompactorHooks } from "./hooks";
 import { Pruner, type PruningPolicy } from "./pruning";
 import { renderMessages } from "./render";
 import type { RuntimeConfig } from "./runtime-config";
@@ -21,6 +22,7 @@ export class Prunella<TRuntimeConfig extends RuntimeConfig = undefined> {
 			model: LanguageModel;
 			policy: CompactionOptions;
 			summaryPrompt?: string;
+			hooks?: CompactorHooks<TRuntimeConfig>;
 		};
 	}) {
 		this.pruner = new Pruner({
@@ -32,6 +34,7 @@ export class Prunella<TRuntimeConfig extends RuntimeConfig = undefined> {
 					model: args.compaction.model,
 					options: args.compaction.policy,
 					summaryPrompt: args.compaction.summaryPrompt,
+					hooks: args.compaction.hooks,
 				})
 			: undefined;
 	}
