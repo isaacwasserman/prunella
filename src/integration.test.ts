@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import type { LanguageModelV4GenerateResult } from "@ai-sdk/provider";
 import type { ModelMessage } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
@@ -943,5 +943,238 @@ describe("runtime config", () => {
 		for (const cfg of store.receivedConfigs) {
 			expect(cfg.tenantId).toBe("t-123");
 		}
+	});
+});
+
+describe("compactor hooks", () => {
+	test("onCompactStart and onCompactEnd fire with correct params when below threshold", async () => {
+		const store = createInMemoryStore();
+		const onCompactStart = mock(async (_: any) => {});
+		const onCompactEnd = mock(async (_: any) => {});
+		const messages = longConversation(3);
+
+		const prunella = new Prunella({
+			pruningPolicy: { hasRole: "never-matches" as never },
+			compaction: {
+				enabled: true,
+				store,
+				model: makeMockModel(),
+				policy: {
+					compactionThreshold: 999_999,
+					minCompactableSpan: 100,
+					maxIterations: 5,
+				},
+				hooks: { onCompactStart, onCompactEnd },
+			},
+		});
+
+		await prunella.prepare({
+			messages,
+			sessionId: "hooks-no-compact",
+			config: undefined,
+		});
+
+		expect(onCompactStart).toHaveBeenCalledTimes(1);
+		const startParams = onCompactStart.mock.calls[0]![0];
+		expect(startParams.sessionId).toBe("hooks-no-compact");
+		expect(startParams.messages).toEqual(messages);
+		expect(startParams.existingSummaries).toEqual([]);
+		expect(startParams.estimatedTokens).toBeGreaterThan(0);
+
+		expect(onCompactEnd).toHaveBeenCalledTimes(1);
+		const endParams = onCompactEnd.mock.calls[0]![0];
+		expect(endParams.sessionId).toBe("hooks-no-compact");
+		expect(endParams.summaries).toEqual([]);
+		expect(endParams.iterations).toBe(0);
+		expect(endParams.estimatedTokens).toBeGreaterThan(0);
+	});
+
+	test("onCompactEnd reports iterations and final summaries after compaction", async () => {
+		const store = createInMemoryStore();
+		const onCompactEnd = mock(async (_: any) => {});
+
+		const prunella = new Prunella({
+			pruningPolicy: { hasRole: "never-matches" as never },
+			compaction: {
+				enabled: true,
+				store,
+				model: makeMockModel(),
+				policy: {
+					compactionThreshold: 500,
+					minCompactableSpan: 100,
+					maxIterations: 3,
+				},
+				hooks: { onCompactEnd },
+			},
+		});
+
+		await prunella.prepare({
+			messages: longConversation(10),
+			sessionId: "iter-count",
+			config: undefined,
+		});
+
+		expect(onCompactEnd).toHaveBeenCalledTimes(1);
+		const params = onCompactEnd.mock.calls[0]![0];
+		expect(params.iterations).toBeGreaterThan(0);
+		expect(params.summaries.length).toBeGreaterThan(0);
+	});
+
+	test("onSummaryCreate called with the new summary", async () => {
+		const store = createInMemoryStore();
+		const onSummaryCreate = mock(async (_: any) => {});
+
+		const prunella = new Prunella({
+			pruningPolicy: { hasRole: "never-matches" as never },
+			compaction: {
+				enabled: true,
+				store,
+				model: makeMockModel(),
+				policy: {
+					compactionThreshold: 500,
+					minCompactableSpan: 100,
+					maxIterations: 1,
+				},
+				hooks: { onSummaryCreate },
+			},
+		});
+
+		await prunella.prepare({
+			messages: longConversation(10),
+			sessionId: "create-hook",
+			config: undefined,
+		});
+
+		expect(onSummaryCreate).toHaveBeenCalledTimes(1);
+		const createParams = onSummaryCreate.mock.calls[0]![0];
+		expect(createParams.sessionId).toBe("create-hook");
+		expect(createParams.summary.id).toBeDefined();
+		expect(createParams.summary.sessionId).toBe("create-hook");
+		expect(createParams.summary.spans.length).toBeGreaterThan(0);
+		expect(typeof createParams.summary.text).toBe("string");
+	});
+
+	test("onSummaryMerge called when two summaries are merged", async () => {
+		const store = createInMemoryStore();
+		const model = makeMockModel();
+
+		const p1 = new Prunella({
+			pruningPolicy: { hasRole: "never-matches" as never },
+			compaction: {
+				enabled: true,
+				store,
+				model,
+				policy: {
+					compactionThreshold: 500,
+					minCompactableSpan: 100,
+					maxIterations: 1,
+				},
+			},
+		});
+
+		await p1.prepare({
+			messages: longConversation(10),
+			sessionId: "merge",
+			config: undefined,
+		});
+		expect(store.summaries.size).toBe(1);
+
+		await p1.prepare({
+			messages: longConversation(20),
+			sessionId: "merge",
+			config: undefined,
+		});
+		expect(store.summaries.size).toBe(2);
+
+		const onSummaryMerge = mock(async (_: any) => {});
+		const p2 = new Prunella({
+			pruningPolicy: { hasRole: "never-matches" as never },
+			compaction: {
+				enabled: true,
+				store,
+				model,
+				policy: {
+					compactionThreshold: 1,
+					minCompactableSpan: 999_999,
+					maxIterations: 1,
+				},
+				hooks: { onSummaryMerge },
+			},
+		});
+
+		await p2.prepare({
+			messages: longConversation(20),
+			sessionId: "merge",
+			config: undefined,
+		});
+
+		expect(onSummaryMerge).toHaveBeenCalledTimes(1);
+		const mergeParams = onSummaryMerge.mock.calls[0]![0];
+		expect(mergeParams.sessionId).toBe("merge");
+		expect(mergeParams.mergedSummary.id).toBeDefined();
+		expect(mergeParams.mergedSummary.spans.length).toBeGreaterThan(0);
+		expect(mergeParams.sourceSummaries).toHaveLength(2);
+	});
+
+	test("hooks receive RuntimeConfig", async () => {
+		type TC = { tenantId: string };
+		const summaries = new Map<string, CompactorSummary>();
+		const store: CompactorStore<TC> = {
+			createSummary: async ({ summary }) => {
+				summaries.set(summary.id, summary);
+			},
+			getSummary: async ({ id }) => {
+				const s = summaries.get(id);
+				if (!s) throw new Error("not found");
+				return s;
+			},
+			getSummariesForSession: async ({ sessionId }) =>
+				[...summaries.values()].filter((s) => s.sessionId === sessionId),
+			updateSummary: async ({ summary }) => {
+				summaries.set(summary.id, summary);
+			},
+			deleteSummary: async ({ id }) => {
+				summaries.delete(id);
+			},
+		};
+
+		const onCompactStart = mock(async (_: any) => {});
+		const onCompactEnd = mock(async (_: any) => {});
+		const onSummaryCreate = mock(async (_: any) => {});
+
+		const prunella = new Prunella<TC>({
+			pruningPolicy: { hasRole: "never-matches" as never },
+			compaction: {
+				enabled: true,
+				store,
+				model: makeMockModel(),
+				policy: {
+					compactionThreshold: 500,
+					minCompactableSpan: 100,
+					maxIterations: 1,
+				},
+				hooks: { onCompactStart, onCompactEnd, onSummaryCreate },
+			},
+		});
+
+		await prunella.prepare({
+			messages: longConversation(10),
+			sessionId: "cfg-hook",
+			config: { tenantId: "t-456" },
+		});
+
+		expect(onCompactStart).toHaveBeenCalled();
+		expect(onCompactEnd).toHaveBeenCalled();
+		expect(onSummaryCreate).toHaveBeenCalled();
+
+		expect(onCompactStart.mock.calls[0]![0].config).toEqual({
+			tenantId: "t-456",
+		});
+		expect(onCompactEnd.mock.calls[0]![0].config).toEqual({
+			tenantId: "t-456",
+		});
+		expect(onSummaryCreate.mock.calls[0]![0].config).toEqual({
+			tenantId: "t-456",
+		});
 	});
 });

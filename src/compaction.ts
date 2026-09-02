@@ -10,6 +10,7 @@ import {
 import dedent from "dedent";
 import { nanoid } from "nanoid";
 import { estimateTokenCount } from "tokenx";
+import type { CompactorHooks } from "./hooks";
 import type { RuntimeConfig } from "./runtime-config";
 import {
 	type IdentifiableMessage,
@@ -172,17 +173,20 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 	private model: LanguageModel;
 	private options: Required<CompactionOptions>;
 	private summaryPrompt: string | undefined;
+	private hooks: CompactorHooks<TRuntimeConfig> | undefined;
 
 	constructor({
 		store,
 		model,
 		options,
 		summaryPrompt,
+		hooks,
 	}: {
 		store: CompactorStore<TRuntimeConfig>;
 		model: LanguageModel;
 		options?: CompactionOptions;
 		summaryPrompt?: string;
+		hooks?: CompactorHooks<TRuntimeConfig>;
 	}) {
 		this.store = store;
 		this.model = model;
@@ -196,6 +200,7 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 			...options,
 		};
 		this.summaryPrompt = summaryPrompt;
+		this.hooks = hooks;
 	}
 
 	private getUncompactedSpans({
@@ -507,6 +512,14 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 			messages: messagesWithIds,
 		});
 
+		await this.hooks?.onCompactStart?.({
+			config,
+			sessionId,
+			messages,
+			existingSummaries,
+			estimatedTokens: await estimateConversationTokens(existingSummaries),
+		});
+
 		let iterations = 0;
 		while (
 			iterations < this.options.maxIterations &&
@@ -533,7 +546,6 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 				uncompactedSpans.length > 0 &&
 				uncompactedTokens >= this.options.minCompactableSpan
 			) {
-				// Compact spans
 				const summaryText = await this.summarizeSpans({
 					spans: uncompactedSpans,
 					messages: messagesWithIds,
@@ -550,21 +562,20 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 						break;
 					}
 				}
-				await this.store.createSummary({
-					summary: {
-						id: nanoid(),
-						sessionId,
-						spans: [
-							{
-								firstPartId: uncompactedSpans[lastGroupStart]!.firstPartId,
-								lastPartId:
-									uncompactedSpans[uncompactedSpans.length - 1]!.lastPartId,
-							},
-						],
-						text: summaryText,
-					},
-					config,
-				});
+				const summary: CompactorSummary = {
+					id: nanoid(),
+					sessionId,
+					spans: [
+						{
+							firstPartId: uncompactedSpans[lastGroupStart]!.firstPartId,
+							lastPartId:
+								uncompactedSpans[uncompactedSpans.length - 1]!.lastPartId,
+						},
+					],
+					text: summaryText,
+				};
+				await this.store.createSummary({ summary, config });
+				await this.hooks?.onSummaryCreate?.({ config, sessionId, summary });
 			} else if (combinableSummary1 && combinableSummary2) {
 				const combinedSummaryText = await this.summarizeSummaries({
 					summaries: [combinableSummary1.text, combinableSummary2.text],
@@ -587,17 +598,21 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 							...combinableSummary2.spans.slice(1),
 						]
 					: [...combinableSummary1.spans, ...combinableSummary2.spans];
-				await this.store.createSummary({
-					summary: {
-						id: nanoid(),
-						sessionId,
-						spans: mergedSpans,
-						text: combinedSummaryText,
-					},
-					config,
-				});
+				const mergedSummary: CompactorSummary = {
+					id: nanoid(),
+					sessionId,
+					spans: mergedSpans,
+					text: combinedSummaryText,
+				};
+				await this.store.createSummary({ summary: mergedSummary, config });
 				await this.store.deleteSummary({ id: combinableSummary1.id, config });
 				await this.store.deleteSummary({ id: combinableSummary2.id, config });
+				await this.hooks?.onSummaryMerge?.({
+					config,
+					sessionId,
+					mergedSummary,
+					sourceSummaries: [combinableSummary1, combinableSummary2],
+				});
 			} else {
 				break;
 			}
@@ -609,6 +624,14 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 				messages: messagesWithIds,
 			});
 		}
+
+		await this.hooks?.onCompactEnd?.({
+			config,
+			sessionId,
+			summaries: existingSummaries,
+			estimatedTokens: await estimateConversationTokens(existingSummaries),
+			iterations,
+		});
 
 		return {
 			summaries: existingSummaries,
