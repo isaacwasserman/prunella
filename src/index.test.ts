@@ -32,9 +32,7 @@ test("prunes parts that match the policy and leaves others intact", async () => 
 	}
 	expect(assistantPart.text.startsWith(PLACEHOLDER_PREFIX)).toBe(true);
 
-	const userContent = messages[0]?.content;
-	if (!Array.isArray(userContent)) throw new Error("expected array content");
-	expect(userContent[0]).toEqual({ type: "text", text: "hello" });
+	expect(messages[0]).toEqual({ role: "user", content: "hello" });
 
 	expect(tools).toHaveProperty("recall-pruned");
 });
@@ -99,7 +97,7 @@ test("recall tool returns original content", async () => {
 	)?.[1];
 	expect(pruneId).toBeString();
 
-	const recallTool = tools["recall-pruned"];
+	const recallTool = tools["recall-pruned"]!;
 	const result = await recallTool.execute({ pruneId }, {
 		toolCallId: "call-1",
 		messages: [],

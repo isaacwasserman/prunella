@@ -1,4 +1,4 @@
-import type { ModelMessage, TextPart } from "ai";
+import type { ModelMessage } from "ai";
 import {
 	type CompactorSummary,
 	type PartSpan,
@@ -9,14 +9,37 @@ import type { IdentifiableMessage } from "./utils";
 
 const RECALL_TOOL_NAME = "recall-pruned";
 
+type RenderedPart = Exclude<ModelMessage["content"], string>[number];
+
+/**
+ * A tool call or result keeps its type, so tool messages stay valid and every
+ * result still has its call.
+ */
 function createPlaceholder(
 	partId: string,
 	originalPart: IdentifiableMessage["parts"][number],
-): TextPart {
-	return {
-		type: "text",
-		text: `This part of the message has been pruned for token efficiency. To have its content revealed, run the ${RECALL_TOOL_NAME} tool with pruneId "${partId}".`,
-	};
+): RenderedPart {
+	const text = `This part of the message has been pruned for token efficiency. To have its content revealed, run the ${RECALL_TOOL_NAME} tool with pruneId "${partId}".`;
+	const { id: _, ...rawPart } = originalPart;
+	if (rawPart.type === "tool-result") {
+		return { ...rawPart, output: { type: "text", value: text } };
+	}
+	if (rawPart.type === "tool-call") {
+		return { ...rawPart, input: { pruned: text } };
+	}
+	return { type: "text", text };
+}
+
+function toMessage(raw: ModelMessage, parts: RenderedPart[]): ModelMessage {
+	if (raw.role === "system") {
+		return {
+			...raw,
+			content: parts
+				.map((part) => (part.type === "text" ? part.text : ""))
+				.join("\n"),
+		};
+	}
+	return { ...raw, content: parts } as ModelMessage;
 }
 
 export function renderMessages({
@@ -43,17 +66,25 @@ export function renderMessages({
 	const emittedSummaries = new Set<string>();
 
 	for (const message of messages) {
-		const outputParts: ModelMessage["content"][number][] = [];
+		const unchanged = message.parts.every(
+			(part) =>
+				!summaryByFirstPartId.has(part.id) &&
+				!coveredByCompaction.has(part.id) &&
+				!mask.has(part.id),
+		);
+		if (unchanged) {
+			result.push(message.raw);
+			continue;
+		}
+
+		const outputParts: RenderedPart[] = [];
 
 		for (const part of message.parts) {
 			const summary = summaryByFirstPartId.get(part.id);
 			if (summary && !emittedSummaries.has(summary.id)) {
 				emittedSummaries.add(summary.id);
 				if (outputParts.length > 0) {
-					result.push({
-						...message.raw,
-						content: outputParts.splice(0),
-					} as ModelMessage);
+					result.push(toMessage(message.raw, outputParts.splice(0)));
 				}
 				result.push(summaryToMessage(summary));
 				continue;
@@ -73,10 +104,7 @@ export function renderMessages({
 		}
 
 		if (outputParts.length > 0) {
-			result.push({
-				...message.raw,
-				content: outputParts,
-			} as ModelMessage);
+			result.push(toMessage(message.raw, outputParts));
 		}
 	}
 

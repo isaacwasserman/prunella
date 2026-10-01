@@ -46,17 +46,20 @@ export class Prunella<TRuntimeConfig extends RuntimeConfig = undefined> {
 	}: { messages: ModelMessage[]; sessionId: string; config: TRuntimeConfig }) {
 		const messagesWithIds = attachIdsToMessages(messages);
 
-		const { mask, tools } = this.pruner.prepare({
+		const { mask, tools: pruningTools } = this.pruner.prepare({
 			messages: messagesWithIds,
 		});
 
-		const { summaries } = this.compactor
+		const compaction = this.compactor
 			? await this.compactor.prepare({
 					messages,
-					sessionId: sessionId,
+					messagesWithIds,
+					mask,
+					sessionId,
 					config,
 				})
-			: { summaries: [] as import("./compaction").CompactorSummary[] };
+			: undefined;
+		const summaries = compaction?.summaries ?? [];
 
 		const rendered = renderMessages({
 			messages: messagesWithIds,
@@ -64,6 +67,13 @@ export class Prunella<TRuntimeConfig extends RuntimeConfig = undefined> {
 			summaries,
 		});
 
-		return { messages: rendered, tools };
+		return {
+			messages: rendered,
+			/** `recall-pruned` when a part was pruned, `recall-summarized` when summaries exist. */
+			tools: {
+				...(mask.size > 0 ? pruningTools : {}),
+				...(compaction && summaries.length > 0 ? compaction.tools : {}),
+			},
+		};
 	}
 }
