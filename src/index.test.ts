@@ -50,7 +50,9 @@ test("placeholder is permanent after recall request", async () => {
 	if (!Array.isArray(prunedContent) || prunedContent[0]?.type !== "text") {
 		throw new Error("expected a pruned text part");
 	}
-	const pruneId = prunedContent[0].text.match(/pruneId "([a-f0-9]+)"/)?.[1];
+	const pruneId = prunedContent[0].text.match(
+		/pruneId "([A-Za-z0-9_-]{8})"/,
+	)?.[1];
 	expect(pruneId).toBeString();
 
 	const withRecall: ModelMessage[] = [
@@ -92,7 +94,9 @@ test("recall tool returns original content", async () => {
 	if (!Array.isArray(prunedContent) || prunedContent[0]?.type !== "text") {
 		throw new Error("expected a pruned text part");
 	}
-	const pruneId = prunedContent[0].text.match(/pruneId "([a-f0-9]+)"/)?.[1];
+	const pruneId = prunedContent[0].text.match(
+		/pruneId "([A-Za-z0-9_-]{8})"/,
+	)?.[1];
 	expect(pruneId).toBeString();
 
 	const recallTool = tools["recall-pruned"];

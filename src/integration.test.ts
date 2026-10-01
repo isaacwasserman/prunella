@@ -103,7 +103,7 @@ function execOpts(): unknown {
 }
 
 function pruneIdFrom(text: string): string {
-	const match = text.match(/pruneId "([a-f0-9]+)"/);
+	const match = text.match(/pruneId "([A-Za-z0-9_-]{8})"/);
 	if (!match?.[1]) throw new Error("no pruneId found in text");
 	return match[1];
 }
