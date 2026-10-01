@@ -5,12 +5,13 @@ import {
 	Output,
 	generateText,
 	jsonSchema,
-	tool,
 } from "ai";
 import dedent from "dedent";
 import { nanoid } from "nanoid";
 import { estimateTokenCount } from "tokenx";
 import type { CompactorHooks } from "./hooks";
+import { type PartAge, partIsOlderThan } from "./pruning";
+import { renderMessages } from "./render";
 import type { RuntimeConfig } from "./runtime-config";
 import {
 	type IdentifiableMessage,
@@ -64,6 +65,11 @@ export type CompactionOptions = {
 	compactionThreshold?: number;
 	minCompactableSpan?: number;
 	maxIterations?: number;
+	/**
+	 * Parts this recent are never compacted. Defaults to `{ turns: 0 }`, which
+	 * keeps the latest user message and everything after it.
+	 */
+	keepRecent?: PartAge;
 };
 
 export type PartSpan = { firstPartId: string; lastPartId: string };
@@ -154,6 +160,36 @@ export function getNextPartId({
 	return null;
 }
 
+/** Sort spans by position and join the ones that touch. */
+export function mergeSpans({
+	spans,
+	messages,
+}: { spans: PartSpan[]; messages: IdentifiableMessage[] }): PartSpan[] {
+	const position = (partId: string) => {
+		const { messageIndex, partIndex } = getPartIndex({ messages, id: partId });
+		return [messageIndex, partIndex] as const;
+	};
+	const sorted = spans.toSorted((a, b) => {
+		const [am, ap] = position(a.firstPartId);
+		const [bm, bp] = position(b.firstPartId);
+		return am !== bm ? am - bm : ap - bp;
+	});
+	const merged: PartSpan[] = [];
+	for (const span of sorted) {
+		const previous = merged.at(-1);
+		if (
+			previous &&
+			getNextPartId({ partId: previous.lastPartId, messages }) ===
+				span.firstPartId
+		) {
+			previous.lastPartId = span.lastPartId;
+		} else {
+			merged.push({ ...span });
+		}
+	}
+	return merged;
+}
+
 export function getPartIdsInSpan({
 	span,
 	messages,
@@ -194,6 +230,7 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 			canCompact: ({ message }) => {
 				return message.role !== "system";
 			},
+			keepRecent: { turns: 0 },
 			compactionThreshold: 80_000,
 			minCompactableSpan: 2000,
 			maxIterations: 3,
@@ -220,13 +257,20 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 			for (let pi = 0; pi < messages[mi]!.parts.length; pi++) {
 				const part = rawMessages[mi]!.content;
 				const resolvedPart = Array.isArray(part) ? part[pi]! : part;
-				const isCompactable = this.options.canCompact({
-					messages: rawMessages,
-					messageIndex: mi,
-					partIndex: pi,
-					message: rawMessages[mi]!,
-					part: resolvedPart,
-				});
+				const isCompactable =
+					partIsOlderThan({
+						messages: rawMessages,
+						messageIndex: mi,
+						partIndex: pi,
+						ageLimit: this.options.keepRecent,
+					}) &&
+					this.options.canCompact({
+						messages: rawMessages,
+						messageIndex: mi,
+						partIndex: pi,
+						message: rawMessages[mi]!,
+						part: resolvedPart,
+					});
 				const partId = messages[mi]!.parts[pi]!.id;
 				const isCovered = existingSummaries.some((s) =>
 					partIsCoveredBySummary({ partId, summary: s, messages }),
@@ -266,92 +310,6 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 		return messages.slice(first.messageIndex, last.messageIndex + 1);
 	}
 
-	private findSummaryAt({
-		partId,
-		span,
-		messages,
-		summaries,
-	}: {
-		partId: string;
-		span: PartSpan;
-		messages: IdentifiableMessage[];
-		summaries: CompactorSummary[];
-	}): { summary: CompactorSummary; matchedSpan: PartSpan } | undefined {
-		for (const s of summaries) {
-			for (const spanEntry of s.spans) {
-				if (
-					spanEntry.firstPartId === partId &&
-					spanIsSubspan({ sub: spanEntry, sup: span, messages })
-				) {
-					return { summary: s, matchedSpan: spanEntry };
-				}
-			}
-		}
-		return undefined;
-	}
-
-	private fullSpan(messages: IdentifiableMessage[]): PartSpan {
-		const firstPartId = messages[0]!.parts[0]!.id;
-		const lastMsg = messages[messages.length - 1]!;
-		const lastPartId = lastMsg.parts[lastMsg.parts.length - 1]!.id;
-		return { firstPartId, lastPartId };
-	}
-
-	private interpolateSummaries({
-		span,
-		messages,
-		existingSummaries,
-	}: {
-		span?: PartSpan;
-		messages: IdentifiableMessage[];
-		existingSummaries: CompactorSummary[];
-	}): ModelMessage[] {
-		const resolvedSpan = span ?? this.fullSpan(messages);
-		const partIds = getPartIdsInSpan({ span: resolvedSpan, messages });
-		const result: ModelMessage[] = [];
-		let rawStartIndex: number | null = null;
-		let i = 0;
-
-		const flushRawParts = () => {
-			if (rawStartIndex !== null) {
-				const rawSpan: PartSpan = {
-					firstPartId: partIds[rawStartIndex]!,
-					lastPartId: partIds[i - 1]!,
-				};
-				result.push(
-					...stripIdsFromMessages(
-						this.getPartRange({ span: rawSpan, messages }),
-					),
-				);
-				rawStartIndex = null;
-			}
-		};
-
-		const emittedSummaryIds = new Set<string>();
-		while (i < partIds.length) {
-			const match = this.findSummaryAt({
-				partId: partIds[i]!,
-				span: resolvedSpan,
-				messages,
-				summaries: existingSummaries,
-			});
-			if (match) {
-				flushRawParts();
-				if (!emittedSummaryIds.has(match.summary.id)) {
-					result.push(summaryToMessage(match.summary));
-					emittedSummaryIds.add(match.summary.id);
-				}
-				i = partIds.indexOf(match.matchedSpan.lastPartId) + 1;
-			} else {
-				if (rawStartIndex === null) rawStartIndex = i;
-				i++;
-			}
-		}
-		flushRawParts();
-
-		return result;
-	}
-
 	private sortSummaries({
 		summaries,
 		messages,
@@ -380,7 +338,7 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 					return `<ToolCall>${JSON.stringify({ toolName: part.toolName, toolInput: part.input })}</ToolCall>`;
 				}
 				case "tool-result": {
-					return `<ToolResult>${JSON.stringify({ toolName: part.toolName, toolInput: part.output })}</ToolResult>`;
+					return `<ToolResult>${JSON.stringify({ toolName: part.toolName, output: part.output })}</ToolResult>`;
 				}
 				default: {
 					return `<${part.type}>...</${part.type}>`;
@@ -413,16 +371,36 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 	private async summarizeSpans({
 		spans,
 		messages,
+		previousSummary,
 	}: {
 		spans: PartSpan[];
 		messages: IdentifiableMessage[];
+		previousSummary?: string;
 	}): Promise<string> {
-		const result = await generateText({
-			model: this.model,
-			instructions: SYSTEM_PROMPT,
-			prompt: dedent`
+		const transcript = this.createTranscriptFromSpans({ spans, messages });
+		const prompt = previousSummary
+			? dedent`
+                <PriorSummary>
+                    ${previousSummary}
+                </PriorSummary>
+
                 <Transcript>
-                    ${this.createTranscriptFromSpans({ spans, messages })}
+                    ${transcript}
+                </Transcript>
+
+                The <PriorSummary> covers everything before the <Transcript>. Write one summary that replaces it. The prior summary is discarded, so anything you leave out is lost.
+                - Carry forward objectives, constraints, decisions, and open work from the prior summary, even when the transcript does not mention them.
+                - Where the prior summary and the transcript conflict, the transcript is newer and wins.
+                - Mark work that the transcript finishes as done.
+                - Simple English
+                - Telegraphic style
+                - Shorthand
+
+				${this.summaryPrompt ? `Additional instructions: ${this.summaryPrompt}` : ""}
+            `
+			: dedent`
+                <Transcript>
+                    ${transcript}
                 </Transcript>
 
                 Compact the chat transcript above into a concise summary.
@@ -432,7 +410,11 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
                 - Strictly shorter than original
 
 				${this.summaryPrompt ? `Additional instructions: ${this.summaryPrompt}` : ""}
-            `,
+            `;
+		const result = await generateText({
+			model: this.model,
+			instructions: SYSTEM_PROMPT,
+			prompt,
 			output: Output.object({
 				schema: jsonSchema<{ summary: string }>({
 					type: "object",
@@ -486,23 +468,31 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 
 	public async prepare({
 		messages,
+		messagesWithIds = attachIdsToMessages(messages),
+		mask = new Set<string>(),
 		sessionId,
 		config,
-	}: { messages: ModelMessage[]; sessionId: string; config: TRuntimeConfig }) {
-		const messagesWithIds = attachIdsToMessages(messages);
-
-		const estimateConversationTokens = async (
+	}: {
+		messages: ModelMessage[];
+		/** IDs shared with the pruner. Computed from `messages` when absent. */
+		messagesWithIds?: IdentifiableMessage[];
+		/** Pruned part IDs. Compaction measures the conversation as rendered with them pruned. */
+		mask?: Set<string>;
+		sessionId: string;
+		config: TRuntimeConfig;
+	}) {
+		const estimateConversationTokens = (
 			existingSummaries: CompactorSummary[],
-		) => {
-			const messagesWithSummaries = this.interpolateSummaries({
-				messages: messagesWithIds,
-				existingSummaries,
-			});
-			const tokenCount = estimateTokenCount(
-				JSON.stringify(messagesWithSummaries),
+		) =>
+			estimateTokenCount(
+				JSON.stringify(
+					renderMessages({
+						messages: messagesWithIds,
+						mask,
+						summaries: existingSummaries,
+					}),
+				),
 			);
-			return tokenCount;
-		};
 
 		let existingSummaries = this.sortSummaries({
 			summaries: await this.store.getSummariesForSession({
@@ -512,22 +502,30 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 			messages: messagesWithIds,
 		});
 
-		await this.hooks?.onCompactStart?.({
-			config,
-			sessionId,
-			messages,
-			existingSummaries,
-			estimatedTokens: await estimateConversationTokens(existingSummaries),
-		});
+		let started = false;
+		let summariesCreated = 0;
+		let summariesMerged = 0;
+		const startCompaction = async () => {
+			if (started) return true;
+			const proceed = await this.hooks?.onCompactStart?.({
+				config,
+				sessionId,
+				messages,
+				existingSummaries,
+				estimatedTokens: estimateConversationTokens(existingSummaries),
+			});
+			if (proceed === false) return false;
+			started = true;
+			return true;
+		};
 
 		let iterations = 0;
 		while (
 			iterations < this.options.maxIterations &&
-			(await estimateConversationTokens(existingSummaries)) >
+			estimateConversationTokens(existingSummaries) >
 				this.options.compactionThreshold
 		) {
 			iterations++;
-			const [combinableSummary1, combinableSummary2] = existingSummaries;
 			const uncompactedSpans = this.getUncompactedSpans({
 				messages: messagesWithIds,
 				existingSummaries,
@@ -539,79 +537,74 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 				});
 				return (
 					total +
-					estimateTokenCount(JSON.stringify(stripIdsFromMessages(partRange)))
+					estimateTokenCount(
+						JSON.stringify(
+							renderMessages({ messages: partRange, mask, summaries: [] }),
+						),
+					)
 				);
 			}, 0);
 			if (
 				uncompactedSpans.length > 0 &&
 				uncompactedTokens >= this.options.minCompactableSpan
 			) {
+				if (!(await startCompaction())) break;
+				const replacedSummaries = existingSummaries;
 				const summaryText = await this.summarizeSpans({
 					spans: uncompactedSpans,
 					messages: messagesWithIds,
+					previousSummary:
+						replacedSummaries.map((summary) => summary.text).join("\n\n") ||
+						undefined,
 				});
-				let lastGroupStart = uncompactedSpans.length - 1;
-				for (let j = uncompactedSpans.length - 1; j > 0; j--) {
-					const nextPartAfterPrev = getNextPartId({
-						partId: uncompactedSpans[j - 1]!.lastPartId,
-						messages: messagesWithIds,
-					});
-					if (nextPartAfterPrev === uncompactedSpans[j]!.firstPartId) {
-						lastGroupStart = j - 1;
-					} else {
-						break;
-					}
-				}
 				const summary: CompactorSummary = {
 					id: nanoid(),
 					sessionId,
-					spans: [
-						{
-							firstPartId: uncompactedSpans[lastGroupStart]!.firstPartId,
-							lastPartId:
-								uncompactedSpans[uncompactedSpans.length - 1]!.lastPartId,
-						},
-					],
+					spans: mergeSpans({
+						spans: [
+							...replacedSummaries.flatMap((summary) => summary.spans),
+							...uncompactedSpans,
+						],
+						messages: messagesWithIds,
+					}),
 					text: summaryText,
 				};
 				await this.store.createSummary({ summary, config });
-				await this.hooks?.onSummaryCreate?.({ config, sessionId, summary });
-			} else if (combinableSummary1 && combinableSummary2) {
-				const combinedSummaryText = await this.summarizeSummaries({
-					summaries: [combinableSummary1.text, combinableSummary2.text],
+				for (const replaced of replacedSummaries) {
+					await this.store.deleteSummary({ id: replaced.id, config });
+				}
+				summariesCreated++;
+				await this.hooks?.onSummaryCreate?.({
+					config,
+					sessionId,
+					summary,
+					replacedSummaries,
 				});
-				const lastSpan1 =
-					combinableSummary1.spans[combinableSummary1.spans.length - 1]!;
-				const firstSpan2 = combinableSummary2.spans[0]!;
-				const consecutive =
-					getNextPartId({
-						partId: lastSpan1.lastPartId,
-						messages: messagesWithIds,
-					}) === firstSpan2.firstPartId;
-				const mergedSpans: PartSpan[] = consecutive
-					? [
-							...combinableSummary1.spans.slice(0, -1),
-							{
-								firstPartId: lastSpan1.firstPartId,
-								lastPartId: firstSpan2.lastPartId,
-							},
-							...combinableSummary2.spans.slice(1),
-						]
-					: [...combinableSummary1.spans, ...combinableSummary2.spans];
+			} else if (existingSummaries.length > 1) {
+				if (!(await startCompaction())) break;
+				const sourceSummaries = existingSummaries;
+				const combinedSummaryText = await this.summarizeSummaries({
+					summaries: sourceSummaries.map((summary) => summary.text),
+				});
 				const mergedSummary: CompactorSummary = {
 					id: nanoid(),
 					sessionId,
-					spans: mergedSpans,
+					spans: mergeSpans({
+						spans: sourceSummaries.flatMap((summary) => summary.spans),
+						messages: messagesWithIds,
+					}),
 					text: combinedSummaryText,
 				};
 				await this.store.createSummary({ summary: mergedSummary, config });
-				await this.store.deleteSummary({ id: combinableSummary1.id, config });
-				await this.store.deleteSummary({ id: combinableSummary2.id, config });
+				for (const source of sourceSummaries) {
+					await this.store.deleteSummary({ id: source.id, config });
+				}
+				summariesMerged++;
 				await this.hooks?.onSummaryMerge?.({
 					config,
 					sessionId,
 					mergedSummary,
-					sourceSummaries: [combinableSummary1, combinableSummary2],
+					sourceSummaries,
 				});
 			} else {
 				break;
@@ -625,43 +618,50 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 			});
 		}
 
-		await this.hooks?.onCompactEnd?.({
-			config,
-			sessionId,
-			summaries: existingSummaries,
-			estimatedTokens: await estimateConversationTokens(existingSummaries),
-			iterations,
-		});
+		if (started) {
+			await this.hooks?.onCompactEnd?.({
+				config,
+				sessionId,
+				summaries: existingSummaries,
+				estimatedTokens: estimateConversationTokens(existingSummaries),
+				iterations,
+				summariesCreated,
+				summariesMerged,
+			});
+		}
 
 		return {
 			summaries: existingSummaries,
 			tools: {
-				recallSummarized: tool({
-					description:
-						"Returns the original unsummarized content for a given summaryId.",
-					inputSchema: jsonSchema<{ summaryId: string }>({
-						type: "object",
-						properties: {
-							summaryId: {
-								type: "string",
-							},
-						},
-						required: ["summaryId"],
-					}),
-					execute: (input) => {
-						const summary = existingSummaries.find(
-							(summary) => summary.id === input.summaryId,
-						);
-						if (!summary) {
-							throw new Error(`No summary found with id "${input.summaryId}"`);
-						}
-						const transcript = this.createTranscriptFromSpans({
-							spans: summary.spans,
-							messages: messagesWithIds,
-						});
-						return transcript;
-					},
-				}),
+				// TODO: Put this tool back when it can recall part of a summary. With one
+				// rolling summary, a recall returns all compacted history, which can be
+				// larger than the context window.
+				// "recall-summarized": tool({
+				// 	description:
+				// 		"Returns the original unsummarized content for a given summaryId.",
+				// 	inputSchema: jsonSchema<{ summaryId: string }>({
+				// 		type: "object",
+				// 		properties: {
+				// 			summaryId: {
+				// 				type: "string",
+				// 			},
+				// 		},
+				// 		required: ["summaryId"],
+				// 	}),
+				// 	execute: (input) => {
+				// 		const summary = existingSummaries.find(
+				// 			(summary) => summary.id === input.summaryId,
+				// 		);
+				// 		if (!summary) {
+				// 			throw new Error(`No summary found with id "${input.summaryId}"`);
+				// 		}
+				// 		const transcript = this.createTranscriptFromSpans({
+				// 			spans: summary.spans,
+				// 			messages: messagesWithIds,
+				// 		});
+				// 		return transcript;
+				// 	},
+				// }),
 			},
 		};
 	}

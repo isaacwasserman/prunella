@@ -78,76 +78,76 @@ function serializePart(part: string | ModelMessage["content"][number]): string {
 	}
 }
 
+/** Whether a part is older than `ageLimit`, counted in user turns or in parts after it. */
+export function partIsOlderThan({
+	messages,
+	messageIndex,
+	partIndex,
+	ageLimit,
+}: {
+	messages: ModelMessage[];
+	messageIndex: number;
+	partIndex: number;
+	ageLimit: PartAge;
+}): boolean {
+	if ("turns" in ageLimit) {
+		let turnAge = 0;
+		const mostRecentMessageIndex = messages.length - 1;
+		if (messageIndex < mostRecentMessageIndex) {
+			const mostRecentMessage = getMessageByIndex({
+				messages,
+				messageIndex: mostRecentMessageIndex,
+			});
+			let subsequentMessageRole: ModelMessage["role"] = mostRecentMessage.role;
+			for (
+				let messageIndexCursor = mostRecentMessageIndex - 1;
+				messageIndexCursor >= messageIndex;
+				messageIndexCursor--
+			) {
+				const messageRole = getMessageByIndex({
+					messages,
+					messageIndex: messageIndexCursor,
+				}).role;
+				if (subsequentMessageRole === "user" && messageRole !== "user") {
+					turnAge++;
+				}
+				subsequentMessageRole = messageRole;
+			}
+		}
+
+		return turnAge > ageLimit.turns;
+	}
+	if ("steps" in ageLimit) {
+		let partAge = 0;
+		for (
+			let messageIndexCursor = messageIndex;
+			messageIndexCursor < messages.length;
+			messageIndexCursor++
+		) {
+			const messageContent = getMessageByIndex({
+				messages,
+				messageIndex: messageIndexCursor,
+			}).content;
+			const messageContentLength = Array.isArray(messageContent)
+				? messageContent.length
+				: 1;
+			if (messageIndexCursor === messageIndex) {
+				partAge += messageContentLength - (partIndex + 1);
+			} else {
+				partAge += messageContentLength;
+			}
+		}
+
+		return partAge > ageLimit.steps;
+	}
+	throw new Error("Invalid part age construction");
+}
+
 export class Pruner {
 	private pruningPolicy: PruningPolicy;
 
 	constructor(args: { pruningPolicy: PruningPolicy }) {
 		this.pruningPolicy = args.pruningPolicy;
-	}
-
-	private partOlderThan({
-		messages,
-		messageIndex,
-		partIndex,
-		ageLimit,
-	}: {
-		messages: ModelMessage[];
-		messageIndex: number;
-		partIndex: number;
-		ageLimit: PartAge;
-	}): boolean {
-		if ("turns" in ageLimit) {
-			let turnAge = 0;
-			const mostRecentMessageIndex = messages.length - 1;
-			if (messageIndex < mostRecentMessageIndex) {
-				const mostRecentMessage = getMessageByIndex({
-					messages,
-					messageIndex: mostRecentMessageIndex,
-				});
-				let subsequentMessageRole: ModelMessage["role"] =
-					mostRecentMessage.role;
-				for (
-					let messageIndexCursor = mostRecentMessageIndex - 1;
-					messageIndexCursor >= messageIndex;
-					messageIndexCursor--
-				) {
-					const messageRole = getMessageByIndex({
-						messages,
-						messageIndex: messageIndexCursor,
-					}).role;
-					if (subsequentMessageRole === "user" && messageRole !== "user") {
-						turnAge++;
-					}
-					subsequentMessageRole = messageRole;
-				}
-			}
-
-			return turnAge > ageLimit.turns;
-		}
-		if ("steps" in ageLimit) {
-			let partAge = 0;
-			for (
-				let messageIndexCursor = messageIndex;
-				messageIndexCursor < messages.length;
-				messageIndexCursor++
-			) {
-				const messageContent = getMessageByIndex({
-					messages,
-					messageIndex: messageIndexCursor,
-				}).content;
-				const messageContentLength = Array.isArray(messageContent)
-					? messageContent.length
-					: 1;
-				if (messageIndexCursor === messageIndex) {
-					partAge += messageContentLength - (partIndex + 1);
-				} else {
-					partAge += messageContentLength;
-				}
-			}
-
-			return partAge > ageLimit.steps;
-		}
-		throw new Error("Invalid part age construction");
 	}
 
 	private evaluatePruningPolicy({
@@ -203,7 +203,7 @@ export class Pruner {
 				}
 				case "olderThan": {
 					const ageLimit = (policyFragment as { olderThan: PartAge }).olderThan;
-					return this.partOlderThan({
+					return partIsOlderThan({
 						messages,
 						messageIndex,
 						partIndex,

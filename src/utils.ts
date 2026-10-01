@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ModelMessage } from "ai";
+import { urlAlphabet } from "nanoid";
 
 export type IdentifiablePart = Exclude<
 	ModelMessage["content"],
@@ -16,6 +17,16 @@ export type IdentifiableMessage = {
 
 export function hashString(str: string): string {
 	return createHash("sha256").update(str).digest("hex");
+}
+
+// Gives a deterministic nanoid-style ID: the same input always gives the same ID.
+export function shortHashString(str: string, size = 8): string {
+	const bytes = createHash("sha256").update(str).digest();
+	let id = "";
+	for (let i = 0; i < size; i++) {
+		id += urlAlphabet[bytes[i]! & 63];
+	}
+	return id;
 }
 
 export function getMessageByIndex({
@@ -100,7 +111,7 @@ export function getMessagePartIdentity({
 		partIndex,
 	});
 
-	const identityHash = hashString(
+	const identityHash = shortHashString(
 		JSON.stringify(previousMessage) +
 			JSON.stringify(previousMessagePart) +
 			JSON.stringify(targetPart),

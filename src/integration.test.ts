@@ -2,8 +2,10 @@ import { describe, expect, mock, test } from "bun:test";
 import type { LanguageModelV4GenerateResult } from "@ai-sdk/provider";
 import type { ModelMessage } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
+import { estimateTokenCount } from "tokenx";
 import type { CompactorStore, CompactorSummary } from "./compaction";
 import { Prunella } from "./index";
+import { attachIdsToMessages } from "./utils";
 
 // --- Test helpers ---
 
@@ -103,7 +105,7 @@ function execOpts(): unknown {
 }
 
 function pruneIdFrom(text: string): string {
-	const match = text.match(/pruneId "([a-f0-9]+)"/);
+	const match = text.match(/pruneId "([A-Za-z0-9_-]{8})"/);
 	if (!match?.[1]) throw new Error("no pruneId found in text");
 	return match[1];
 }
@@ -121,7 +123,7 @@ describe("edge cases: empty and minimal inputs", () => {
 			config: undefined,
 		});
 		expect(messages).toEqual([]);
-		expect(tools).toHaveProperty("recall-pruned");
+		expect(tools).toEqual({});
 	});
 
 	test("single user message with string content", async () => {
@@ -216,12 +218,11 @@ describe("edge cases: pruning", () => {
 		const textParts = content.filter(
 			(p) => typeof p !== "string" && p.type === "text",
 		) as { type: "text"; text: string }[];
-		const hasOriginal = textParts.some((p) => p.text === "thinking");
-		const hasPruned = textParts.some((p) =>
-			p.text.startsWith(PLACEHOLDER_PREFIX),
-		);
-		expect(hasOriginal).toBe(true);
-		expect(hasPruned).toBe(true);
+		const toolCall = content.find(
+			(p) => typeof p !== "string" && p.type === "tool-call",
+		) as { input: { pruned?: string } } | undefined;
+		expect(textParts.some((p) => p.text === "thinking")).toBe(true);
+		expect(toolCall?.input.pruned?.startsWith(PLACEHOLDER_PREFIX)).toBe(true);
 	});
 
 	test("recall tool-call parts are never pruned even when matching policy", async () => {
@@ -266,7 +267,7 @@ describe("edge cases: pruning", () => {
 			sessionId: "test",
 			config: undefined,
 		});
-		const result = await tools["recall-pruned"].execute(
+		const result = await tools["recall-pruned"]!.execute(
 			{ pruneId: "nonexistent" },
 			execOpts() as never,
 		);
@@ -309,16 +310,13 @@ describe("edge cases: pruning", () => {
 		});
 		const content = messages[0]!.content;
 		if (!Array.isArray(content)) throw new Error("expected array");
-		const placeholder = content.find(
-			(p) =>
-				typeof p !== "string" &&
-				p.type === "text" &&
-				p.text.startsWith(PLACEHOLDER_PREFIX),
-		) as { type: "text"; text: string } | undefined;
-		if (!placeholder) throw new Error("expected placeholder");
+		const prunedCall = content.find(
+			(p) => typeof p !== "string" && p.type === "tool-call",
+		) as { input: { pruned?: string } } | undefined;
+		if (!prunedCall?.input.pruned) throw new Error("expected placeholder");
 
-		const pruneId = pruneIdFrom(placeholder.text);
-		const result = await tools["recall-pruned"].execute(
+		const pruneId = pruneIdFrom(prunedCall.input.pruned);
+		const result = await tools["recall-pruned"]!.execute(
 			{ pruneId },
 			execOpts() as never,
 		);
@@ -770,20 +768,65 @@ describe("edge cases: pruning + compaction interaction", () => {
 });
 
 describe("edge cases: render step", () => {
-	test("string content is normalized to text part array", async () => {
+	test("a message with nothing pruned or summarized is passed through as is", async () => {
 		const prunella = new Prunella({
 			pruningPolicy: { hasRole: "tool" },
 		});
+		const input: ModelMessage[] = [
+			{ role: "system", content: "You are a helpful assistant." },
+			{ role: "user", content: "hello world" },
+		];
 		const { messages } = await prunella.prepare({
-			messages: [{ role: "user", content: "hello world" }],
+			messages: input,
 			sessionId: "test",
 			config: undefined,
 		});
-		const content = messages[0]!.content;
-		expect(Array.isArray(content)).toBe(true);
-		if (Array.isArray(content)) {
-			expect(content[0]).toEqual({ type: "text", text: "hello world" });
-		}
+		expect(messages[0]).toBe(input[0]!);
+		expect(messages[1]).toBe(input[1]!);
+	});
+
+	test("a pruned tool result stays a tool result for its call", async () => {
+		const prunella = new Prunella({
+			pruningPolicy: { hasType: "tool-result" },
+		});
+		const { messages } = await prunella.prepare({
+			messages: [
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "tool-call",
+							toolCallId: "tc-1",
+							toolName: "search",
+							input: { q: "weather" },
+						},
+					],
+				},
+				{
+					role: "tool",
+					content: [
+						{
+							type: "tool-result",
+							toolCallId: "tc-1",
+							toolName: "search",
+							output: { type: "text", value: "sunny" },
+						},
+					],
+				},
+			],
+			sessionId: "test",
+			config: undefined,
+		});
+		const content = messages[1]!.content;
+		if (!Array.isArray(content)) throw new Error("expected array");
+		expect(content[0]).toMatchObject({
+			type: "tool-result",
+			toolCallId: "tc-1",
+			toolName: "search",
+			output: { type: "text" },
+		});
+		const output = (content[0] as { output: { value: string } }).output;
+		expect(output.value.startsWith(PLACEHOLDER_PREFIX)).toBe(true);
 	});
 
 	test("message with all parts pruned still appears with placeholders", async () => {
@@ -846,11 +889,11 @@ describe("edge cases: render step", () => {
 
 		expect(ids[0]).not.toBe(ids[1]);
 
-		const r1 = await tools["recall-pruned"].execute(
+		const r1 = await tools["recall-pruned"]!.execute(
 			{ pruneId: ids[0] },
 			execOpts() as never,
 		);
-		const r2 = await tools["recall-pruned"].execute(
+		const r2 = await tools["recall-pruned"]!.execute(
 			{ pruneId: ids[1] },
 			execOpts() as never,
 		);
@@ -947,7 +990,7 @@ describe("runtime config", () => {
 });
 
 describe("compactor hooks", () => {
-	test("onCompactStart and onCompactEnd fire with correct params when below threshold", async () => {
+	test("onCompactStart and onCompactEnd do not fire when below threshold", async () => {
 		const store = createInMemoryStore();
 		const onCompactStart = mock(async (_: any) => {});
 		const onCompactEnd = mock(async (_: any) => {});
@@ -974,19 +1017,80 @@ describe("compactor hooks", () => {
 			config: undefined,
 		});
 
+		expect(onCompactStart).not.toHaveBeenCalled();
+		expect(onCompactEnd).not.toHaveBeenCalled();
+	});
+
+	test("onCompactStart and onCompactEnd fire with correct params when compaction runs", async () => {
+		const store = createInMemoryStore();
+		const onCompactStart = mock(async (_: any) => {});
+		const onCompactEnd = mock(async (_: any) => {});
+		const messages = longConversation(10);
+
+		const prunella = new Prunella({
+			pruningPolicy: { hasRole: "never-matches" as never },
+			compaction: {
+				enabled: true,
+				store,
+				model: makeMockModel(),
+				policy: {
+					compactionThreshold: 500,
+					minCompactableSpan: 100,
+					maxIterations: 1,
+				},
+				hooks: { onCompactStart, onCompactEnd },
+			},
+		});
+
+		await prunella.prepare({
+			messages,
+			sessionId: "hooks-compact",
+			config: undefined,
+		});
+
 		expect(onCompactStart).toHaveBeenCalledTimes(1);
 		const startParams = onCompactStart.mock.calls[0]![0];
-		expect(startParams.sessionId).toBe("hooks-no-compact");
+		expect(startParams.sessionId).toBe("hooks-compact");
 		expect(startParams.messages).toEqual(messages);
 		expect(startParams.existingSummaries).toEqual([]);
-		expect(startParams.estimatedTokens).toBeGreaterThan(0);
+		expect(startParams.estimatedTokens).toBeGreaterThan(500);
 
 		expect(onCompactEnd).toHaveBeenCalledTimes(1);
 		const endParams = onCompactEnd.mock.calls[0]![0];
-		expect(endParams.sessionId).toBe("hooks-no-compact");
-		expect(endParams.summaries).toEqual([]);
-		expect(endParams.iterations).toBe(0);
-		expect(endParams.estimatedTokens).toBeGreaterThan(0);
+		expect(endParams.sessionId).toBe("hooks-compact");
+		expect(endParams.summaries).toHaveLength(1);
+		expect(endParams.iterations).toBe(1);
+		expect(endParams.summariesCreated).toBe(1);
+		expect(endParams.summariesMerged).toBe(0);
+	});
+
+	test("compaction is skipped when onCompactStart returns false", async () => {
+		const store = createInMemoryStore();
+		const onCompactEnd = mock(async (_: any) => {});
+
+		const prunella = new Prunella({
+			pruningPolicy: { hasRole: "never-matches" as never },
+			compaction: {
+				enabled: true,
+				store,
+				model: makeMockModel(),
+				policy: {
+					compactionThreshold: 500,
+					minCompactableSpan: 100,
+					maxIterations: 3,
+				},
+				hooks: { onCompactStart: async () => false, onCompactEnd },
+			},
+		});
+
+		await prunella.prepare({
+			messages: longConversation(10),
+			sessionId: "declined",
+			config: undefined,
+		});
+
+		expect(store.summaries.size).toBe(0);
+		expect(onCompactEnd).not.toHaveBeenCalled();
 	});
 
 	test("onCompactEnd reports iterations and final summaries after compaction", async () => {
@@ -1054,11 +1158,11 @@ describe("compactor hooks", () => {
 		expect(typeof createParams.summary.text).toBe("string");
 	});
 
-	test("onSummaryMerge called when two summaries are merged", async () => {
+	test("a second compaction replaces the summary with one written from it", async () => {
 		const store = createInMemoryStore();
 		const model = makeMockModel();
-
-		const p1 = new Prunella({
+		const onSummaryCreate = mock(async (_: any) => {});
+		const prunella = new Prunella({
 			pruningPolicy: { hasRole: "never-matches" as never },
 			compaction: {
 				enabled: true,
@@ -1069,30 +1173,64 @@ describe("compactor hooks", () => {
 					minCompactableSpan: 100,
 					maxIterations: 1,
 				},
+				hooks: { onSummaryCreate },
 			},
 		});
 
-		await p1.prepare({
+		await prunella.prepare({
 			messages: longConversation(10),
-			sessionId: "merge",
+			sessionId: "rolling",
 			config: undefined,
 		});
-		expect(store.summaries.size).toBe(1);
+		const [first] = [...store.summaries.values()];
 
-		await p1.prepare({
+		await prunella.prepare({
 			messages: longConversation(20),
-			sessionId: "merge",
+			sessionId: "rolling",
 			config: undefined,
 		});
-		expect(store.summaries.size).toBe(2);
 
+		const summaries = [...store.summaries.values()];
+		expect(summaries).toHaveLength(1);
+		expect(summaries[0]!.id).not.toBe(first!.id);
+		expect(summaries[0]!.spans).toHaveLength(1);
+		expect(onSummaryCreate.mock.calls[1]![0].replacedSummaries).toEqual([
+			first,
+		]);
+		expect(JSON.stringify(model.doGenerateCalls[1]!.prompt)).toContain(
+			"<PriorSummary>",
+		);
+	});
+
+	test("summaries written before rolling summaries are merged into one", async () => {
+		const store = createInMemoryStore();
+		const messages = longConversation(10);
+		const parts = attachIdsToMessages(messages).flatMap(
+			(message) => message.parts,
+		);
+		for (const [id, first, last] of [
+			["older", 1, 8],
+			["newer", 9, 16],
+		] as const) {
+			await store.createSummary({
+				summary: {
+					id,
+					sessionId: "legacy",
+					spans: [
+						{ firstPartId: parts[first]!.id, lastPartId: parts[last]!.id },
+					],
+					text: `${id} summary`,
+				},
+				config: undefined,
+			});
+		}
 		const onSummaryMerge = mock(async (_: any) => {});
-		const p2 = new Prunella({
+		const prunella = new Prunella({
 			pruningPolicy: { hasRole: "never-matches" as never },
 			compaction: {
 				enabled: true,
 				store,
-				model,
+				model: makeMockModel(),
 				policy: {
 					compactionThreshold: 1,
 					minCompactableSpan: 999_999,
@@ -1102,18 +1240,21 @@ describe("compactor hooks", () => {
 			},
 		});
 
-		await p2.prepare({
-			messages: longConversation(20),
-			sessionId: "merge",
+		await prunella.prepare({
+			messages,
+			sessionId: "legacy",
 			config: undefined,
 		});
 
+		expect(store.summaries.size).toBe(1);
 		expect(onSummaryMerge).toHaveBeenCalledTimes(1);
 		const mergeParams = onSummaryMerge.mock.calls[0]![0];
-		expect(mergeParams.sessionId).toBe("merge");
-		expect(mergeParams.mergedSummary.id).toBeDefined();
-		expect(mergeParams.mergedSummary.spans.length).toBeGreaterThan(0);
-		expect(mergeParams.sourceSummaries).toHaveLength(2);
+		expect(
+			mergeParams.sourceSummaries.map((s: CompactorSummary) => s.id),
+		).toEqual(["older", "newer"]);
+		expect(mergeParams.mergedSummary.spans).toEqual([
+			{ firstPartId: parts[1]!.id, lastPartId: parts[16]!.id },
+		]);
 	});
 
 	test("hooks receive RuntimeConfig", async () => {
@@ -1176,5 +1317,182 @@ describe("compactor hooks", () => {
 		expect(onSummaryCreate.mock.calls[0]![0].config).toEqual({
 			tenantId: "t-456",
 		});
+	});
+});
+
+describe("compaction policy", () => {
+	function compactingPrunella({
+		store,
+		model = makeMockModel(),
+		pruningPolicy = { hasRole: "never-matches" as never },
+		compactionThreshold = 500,
+		keepRecent,
+	}: {
+		store: ReturnType<typeof createInMemoryStore>;
+		model?: ReturnType<typeof makeMockModel>;
+		pruningPolicy?: ConstructorParameters<typeof Prunella>[0]["pruningPolicy"];
+		compactionThreshold?: number;
+		keepRecent?: { turns: number };
+	}) {
+		return new Prunella({
+			pruningPolicy,
+			compaction: {
+				enabled: true,
+				store,
+				model,
+				policy: {
+					compactionThreshold,
+					minCompactableSpan: 100,
+					maxIterations: 1,
+					...(keepRecent ? { keepRecent } : {}),
+				},
+			},
+		});
+	}
+
+	function questions(messages: ModelMessage[]): string[] {
+		return extractText(messages)
+			.split("\n")
+			.filter((line) => line.startsWith("Question"))
+			.map((line) => line.split(":")[0]!);
+	}
+
+	test("never compacts the latest user message by default", async () => {
+		const messages = [
+			...longConversation(5),
+			{ role: "user", content: `Question 5: ${"z".repeat(200)}` },
+		] as ModelMessage[];
+
+		const { messages: rendered } = await compactingPrunella({
+			store: createInMemoryStore(),
+			compactionThreshold: 0,
+		}).prepare({ messages, sessionId: "default-keep", config: undefined });
+
+		expect(questions(rendered)).toEqual(["Question 5"]);
+	});
+
+	test("keepRecent keeps the given number of earlier turns", async () => {
+		const messages = [
+			...longConversation(5),
+			{ role: "user", content: `Question 5: ${"z".repeat(200)}` },
+		] as ModelMessage[];
+
+		const { messages: rendered } = await compactingPrunella({
+			store: createInMemoryStore(),
+			compactionThreshold: 0,
+			keepRecent: { turns: 2 },
+		}).prepare({ messages, sessionId: "keep-two", config: undefined });
+
+		expect(questions(rendered)).toEqual([
+			"Question 3",
+			"Question 4",
+			"Question 5",
+		]);
+	});
+
+	test("measures the conversation with pruned parts as placeholders", async () => {
+		const messages = longConversation(10);
+		const pruningPolicy = { hasRole: "assistant" as const };
+		const render = async (
+			policy: ConstructorParameters<typeof Prunella>[0]["pruningPolicy"],
+		) =>
+			estimateTokenCount(
+				JSON.stringify(
+					(
+						await new Prunella({ pruningPolicy: policy }).prepare({
+							messages,
+							sessionId: "size",
+							config: undefined,
+						})
+					).messages,
+				),
+			);
+		const prunedSize = await render(pruningPolicy);
+		const fullSize = await render({ hasRole: "never-matches" as never });
+		const compactionThreshold = Math.round((prunedSize + fullSize) / 2);
+
+		const withPruning = createInMemoryStore();
+		await compactingPrunella({
+			store: withPruning,
+			pruningPolicy,
+			compactionThreshold,
+		}).prepare({ messages, sessionId: "size", config: undefined });
+		const withoutPruning = createInMemoryStore();
+		await compactingPrunella({
+			store: withoutPruning,
+			compactionThreshold,
+		}).prepare({ messages, sessionId: "size", config: undefined });
+
+		expect(withPruning.summaries.size).toBe(0);
+		expect(withoutPruning.summaries.size).toBe(1);
+	});
+
+	test("labels a tool result's output as output in the summarizer transcript", async () => {
+		const model = makeMockModel();
+		const messages: ModelMessage[] = [
+			{ role: "user", content: `Question: ${"x".repeat(200)}` },
+			{
+				role: "assistant",
+				content: [
+					{
+						type: "tool-call",
+						toolCallId: "tc-1",
+						toolName: "search",
+						input: { q: "weather" },
+					},
+				],
+			},
+			{
+				role: "tool",
+				content: [
+					{
+						type: "tool-result",
+						toolCallId: "tc-1",
+						toolName: "search",
+						output: { type: "text", value: "y".repeat(400) },
+					},
+				],
+			},
+			{ role: "assistant", content: [{ type: "text", text: "Sunny." }] },
+			{ role: "user", content: "Thanks" },
+		];
+
+		await compactingPrunella({
+			store: createInMemoryStore(),
+			model,
+			compactionThreshold: 0,
+		}).prepare({ messages, sessionId: "label", config: undefined });
+
+		const transcript = JSON.stringify(model.doGenerateCalls[0]!.prompt);
+		expect(transcript).toContain(
+			'<ToolResult>{\\"toolName\\":\\"search\\",\\"output\\":',
+		);
+		expect(transcript).not.toContain(
+			'<ToolResult>{\\"toolName\\":\\"search\\",\\"toolInput\\":',
+		);
+	});
+
+	test("offers each recall tool only when there is something to recall", async () => {
+		const store = createInMemoryStore();
+		const quiet = await compactingPrunella({
+			store,
+			compactionThreshold: 999_999,
+		}).prepare({
+			messages: longConversation(10),
+			sessionId: "tools",
+			config: undefined,
+		});
+		expect(Object.keys(quiet.tools)).toEqual([]);
+
+		const busy = await compactingPrunella({
+			store,
+			pruningPolicy: { hasRole: "assistant" },
+		}).prepare({
+			messages: longConversation(10),
+			sessionId: "tools",
+			config: undefined,
+		});
+		// TODO: Expect "recall-summarized" too when the compactor offers it again.
+		expect(Object.keys(busy.tools).sort()).toEqual(["recall-pruned"]);
 	});
 });
