@@ -14,7 +14,8 @@ export type CompactorHooks<TRuntimeConfig extends RuntimeConfig = undefined> = {
 		messages: ModelMessage[];
 		existingSummaries: CompactorSummary[];
 		estimatedTokens: number;
-	}) => Promise<void> | Promise<boolean>;
+		// biome-ignore lint/suspicious/noConfusingVoidType: a hook may return `false` on one path and nothing on the others.
+	}) => Promise<boolean | void>;
 
 	/** Fires once compaction has finished, if `onCompactStart` let it start. */
 	onCompactEnd?: (params: {

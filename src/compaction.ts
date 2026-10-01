@@ -5,7 +5,6 @@ import {
 	Output,
 	generateText,
 	jsonSchema,
-	tool,
 } from "ai";
 import dedent from "dedent";
 import { nanoid } from "nanoid";
@@ -634,32 +633,35 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 		return {
 			summaries: existingSummaries,
 			tools: {
-				"recall-summarized": tool({
-					description:
-						"Returns the original unsummarized content for a given summaryId.",
-					inputSchema: jsonSchema<{ summaryId: string }>({
-						type: "object",
-						properties: {
-							summaryId: {
-								type: "string",
-							},
-						},
-						required: ["summaryId"],
-					}),
-					execute: (input) => {
-						const summary = existingSummaries.find(
-							(summary) => summary.id === input.summaryId,
-						);
-						if (!summary) {
-							throw new Error(`No summary found with id "${input.summaryId}"`);
-						}
-						const transcript = this.createTranscriptFromSpans({
-							spans: summary.spans,
-							messages: messagesWithIds,
-						});
-						return transcript;
-					},
-				}),
+				// TODO: Put this tool back when it can recall part of a summary. With one
+				// rolling summary, a recall returns all compacted history, which can be
+				// larger than the context window.
+				// "recall-summarized": tool({
+				// 	description:
+				// 		"Returns the original unsummarized content for a given summaryId.",
+				// 	inputSchema: jsonSchema<{ summaryId: string }>({
+				// 		type: "object",
+				// 		properties: {
+				// 			summaryId: {
+				// 				type: "string",
+				// 			},
+				// 		},
+				// 		required: ["summaryId"],
+				// 	}),
+				// 	execute: (input) => {
+				// 		const summary = existingSummaries.find(
+				// 			(summary) => summary.id === input.summaryId,
+				// 		);
+				// 		if (!summary) {
+				// 			throw new Error(`No summary found with id "${input.summaryId}"`);
+				// 		}
+				// 		const transcript = this.createTranscriptFromSpans({
+				// 			spans: summary.spans,
+				// 			messages: messagesWithIds,
+				// 		});
+				// 		return transcript;
+				// 	},
+				// }),
 			},
 		};
 	}

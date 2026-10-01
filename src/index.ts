@@ -69,7 +69,7 @@ export class Prunella<TRuntimeConfig extends RuntimeConfig = undefined> {
 
 		return {
 			messages: rendered,
-			/** `recall-pruned` when a part was pruned, `recall-summarized` when summaries exist. */
+			/** `recall-pruned` when a part was pruned, and the compactor tools when summaries exist. */
 			tools: {
 				...(mask.size > 0 ? pruningTools : {}),
 				...(compaction && summaries.length > 0 ? compaction.tools : {}),

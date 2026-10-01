@@ -1492,9 +1492,7 @@ describe("compaction policy", () => {
 			sessionId: "tools",
 			config: undefined,
 		});
-		expect(Object.keys(busy.tools).sort()).toEqual([
-			"recall-pruned",
-			"recall-summarized",
-		]);
+		// TODO: Expect "recall-summarized" too when the compactor offers it again.
+		expect(Object.keys(busy.tools).sort()).toEqual(["recall-pruned"]);
 	});
 });
