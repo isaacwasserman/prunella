@@ -15,7 +15,7 @@ type RenderedPart = Exclude<ModelMessage["content"], string>[number];
  * A tool call or result keeps its type, so tool messages stay valid and every
  * result still has its call.
  */
-function createPlaceholder(
+export function createPlaceholder(
 	partId: string,
 	originalPart: IdentifiableMessage["parts"][number],
 ): RenderedPart {

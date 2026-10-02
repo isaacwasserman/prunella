@@ -466,10 +466,30 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 		return result.output.summary;
 	}
 
+	/** The session's summaries, in conversation order. */
+	public async loadSummaries({
+		messagesWithIds,
+		sessionId,
+		config,
+	}: {
+		messagesWithIds: IdentifiableMessage[];
+		sessionId: string;
+		config: TRuntimeConfig;
+	}): Promise<CompactorSummary[]> {
+		return this.sortSummaries({
+			summaries: await this.store.getSummariesForSession({
+				sessionId,
+				config,
+			}),
+			messages: messagesWithIds,
+		});
+	}
+
 	public async prepare({
 		messages,
 		messagesWithIds = attachIdsToMessages(messages),
 		mask = new Set<string>(),
+		existingSummaries: loadedSummaries,
 		sessionId,
 		config,
 	}: {
@@ -478,6 +498,8 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 		messagesWithIds?: IdentifiableMessage[];
 		/** Pruned part IDs. Compaction measures the conversation as rendered with them pruned. */
 		mask?: Set<string>;
+		/** The session's summaries, when the caller has already loaded them. */
+		existingSummaries?: CompactorSummary[];
 		sessionId: string;
 		config: TRuntimeConfig;
 	}) {
@@ -494,13 +516,9 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 				),
 			);
 
-		let existingSummaries = this.sortSummaries({
-			summaries: await this.store.getSummariesForSession({
-				sessionId,
-				config,
-			}),
-			messages: messagesWithIds,
-		});
+		let existingSummaries =
+			loadedSummaries ??
+			(await this.loadSummaries({ messagesWithIds, sessionId, config }));
 
 		let started = false;
 		let summariesCreated = 0;

@@ -1,14 +1,60 @@
 import type { LanguageModel, ModelMessage } from "ai";
+import { estimateTokenCount } from "tokenx";
 import {
 	type CompactionOptions,
 	Compactor,
 	type CompactorStore,
+	type CompactorSummary,
+	getPartIdsInSpan,
 } from "./compaction";
 import type { CompactorHooks } from "./hooks";
-import { Pruner, type PruningPolicy } from "./pruning";
-import { renderMessages } from "./render";
+import { type PressureMeasure, Pruner, type PruningPolicy } from "./pruning";
+import { createPlaceholder, renderMessages } from "./render";
 import type { RuntimeConfig } from "./runtime-config";
-import { attachIdsToMessages } from "./utils";
+import { type IdentifiableMessage, attachIdsToMessages } from "./utils";
+
+/** Measure the conversation the way compaction does: rendered, with summaries in place. */
+function measureRendered({
+	messagesWithIds,
+	existingSummaries,
+}: {
+	messagesWithIds: IdentifiableMessage[];
+	existingSummaries: CompactorSummary[];
+}): PressureMeasure {
+	const parts = new Map(
+		messagesWithIds.flatMap((message) =>
+			message.parts.map((part) => [part.id, part] as const),
+		),
+	);
+	const covered = new Set(
+		existingSummaries.flatMap((summary) =>
+			summary.spans.flatMap((span) =>
+				getPartIdsInSpan({ span, messages: messagesWithIds }),
+			),
+		),
+	);
+	return {
+		size: (mask) =>
+			estimateTokenCount(
+				JSON.stringify(
+					renderMessages({
+						messages: messagesWithIds,
+						mask,
+						summaries: existingSummaries,
+					}),
+				),
+			),
+		savings: (partId) => {
+			const part = parts.get(partId);
+			if (!part || covered.has(partId)) return 0;
+			const { id: _, ...rawPart } = part;
+			return (
+				estimateTokenCount(JSON.stringify(rawPart)) -
+				estimateTokenCount(JSON.stringify(createPlaceholder(partId, part)))
+			);
+		},
+	};
+}
 
 export class Prunella<TRuntimeConfig extends RuntimeConfig = undefined> {
 	private pruner: Pruner;
@@ -45,9 +91,17 @@ export class Prunella<TRuntimeConfig extends RuntimeConfig = undefined> {
 		config,
 	}: { messages: ModelMessage[]; sessionId: string; config: TRuntimeConfig }) {
 		const messagesWithIds = attachIdsToMessages(messages);
+		const existingSummaries = this.compactor
+			? await this.compactor.loadSummaries({
+					messagesWithIds,
+					sessionId,
+					config,
+				})
+			: [];
 
 		const { mask, tools: pruningTools } = this.pruner.prepare({
 			messages: messagesWithIds,
+			measure: measureRendered({ messagesWithIds, existingSummaries }),
 		});
 
 		const compaction = this.compactor
@@ -55,6 +109,7 @@ export class Prunella<TRuntimeConfig extends RuntimeConfig = undefined> {
 					messages,
 					messagesWithIds,
 					mask,
+					existingSummaries,
 					sessionId,
 					config,
 				})

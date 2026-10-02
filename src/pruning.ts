@@ -15,7 +15,33 @@ export type PartAge =
 	  }
 	| {
 			steps: number;
+	  }
+	| {
+			messages: number;
 	  };
+
+export const DEFAULT_PRESSURE_BUFFER_FACTOR = 0.1;
+
+/**
+ * True for the parts chosen to relieve pressure. When the rendered
+ * conversation is over `budget` tokens, the oldest parts that the rest of the
+ * policy would prune with this condition true are chosen, in steps of
+ * `bufferFactor * budget` tokens, so the conversation drops to about
+ * `budget * (1 - bufferFactor)` and grows back to `budget` before more is
+ * chosen.
+ */
+export type PressureCondition = {
+	budget: number;
+	bufferFactor?: number;
+};
+
+/** How the pruner measures the conversation it renders. */
+export type PressureMeasure = {
+	/** Tokens of the rendered conversation with `mask` pruned. */
+	size: (mask: Set<string>) => number;
+	/** Tokens saved by pruning one part. */
+	savings: (partId: string) => number;
+};
 
 type PrunePredicate = ({
 	messageIndex,
@@ -52,6 +78,9 @@ export type PruningPolicy =
 	  }
 	| {
 			shouldPrune: PrunePredicate;
+	  }
+	| {
+			hasPressure: PressureCondition;
 	  };
 
 type AllPruningPolicyKeys = keyof {
@@ -78,7 +107,7 @@ function serializePart(part: string | ModelMessage["content"][number]): string {
 	}
 }
 
-/** Whether a part is older than `ageLimit`, counted in user turns or in parts after it. */
+/** Whether a part is older than `ageLimit`, counted in user turns, parts, or messages after it. */
 export function partIsOlderThan({
 	messages,
 	messageIndex,
@@ -140,14 +169,37 @@ export function partIsOlderThan({
 
 		return partAge > ageLimit.steps;
 	}
+	if ("messages" in ageLimit) {
+		return messages.length - 1 - messageIndex > ageLimit.messages;
+	}
 	throw new Error("Invalid part age construction");
+}
+
+function collectPressureConditions(policy: PruningPolicy): PressureCondition[] {
+	if ("hasPressure" in policy) {
+		const { budget, bufferFactor = DEFAULT_PRESSURE_BUFFER_FACTOR } =
+			policy.hasPressure;
+		if (!Number.isFinite(budget) || budget < 0) {
+			throw new Error("hasPressure budget must be a finite number >= 0");
+		}
+		if (!(bufferFactor >= 0 && bufferFactor < 1)) {
+			throw new Error("hasPressure bufferFactor must be >= 0 and < 1");
+		}
+		return [policy.hasPressure];
+	}
+	if ("AND" in policy) return policy.AND.flatMap(collectPressureConditions);
+	if ("OR" in policy) return policy.OR.flatMap(collectPressureConditions);
+	if ("NOT" in policy) return collectPressureConditions(policy.NOT);
+	return [];
 }
 
 export class Pruner {
 	private pruningPolicy: PruningPolicy;
+	private pressureConditions: PressureCondition[];
 
 	constructor(args: { pruningPolicy: PruningPolicy }) {
 		this.pruningPolicy = args.pruningPolicy;
+		this.pressureConditions = collectPressureConditions(args.pruningPolicy);
 	}
 
 	private evaluatePruningPolicy({
@@ -155,11 +207,15 @@ export class Pruner {
 		policyFragment,
 		messageIndex,
 		partIndex,
+		partId,
+		chosen,
 	}: {
 		messages: ModelMessage[];
 		policyFragment: PruningPolicy;
 		messageIndex: number;
 		partIndex: number;
+		partId: string;
+		chosen: Map<PressureCondition, Set<string>>;
 	}): boolean {
 		const policyKeys = Object.keys(policyFragment) as AllPruningPolicyKeys[];
 		return policyKeys.every((policyKey) => {
@@ -174,6 +230,8 @@ export class Pruner {
 							policyFragment: subPolicy,
 							messageIndex,
 							partIndex,
+							partId,
+							chosen,
 						}),
 					);
 				}
@@ -187,6 +245,8 @@ export class Pruner {
 							policyFragment: subPolicy,
 							messageIndex,
 							partIndex,
+							partId,
+							chosen,
 						}),
 					);
 				}
@@ -199,6 +259,8 @@ export class Pruner {
 						policyFragment: subPolicy,
 						messageIndex,
 						partIndex,
+						partId,
+						chosen,
 					});
 				}
 				case "olderThan": {
@@ -248,6 +310,12 @@ export class Pruner {
 						part,
 					});
 				}
+				case "hasPressure": {
+					const condition = (
+						policyFragment as { hasPressure: PressureCondition }
+					).hasPressure;
+					return chosen.get(condition)?.has(partId) ?? false;
+				}
 			}
 		});
 	}
@@ -276,10 +344,14 @@ export class Pruner {
 		messages,
 		messageIndex,
 		partIndex,
+		partId,
+		chosen,
 	}: {
 		messages: ModelMessage[];
 		messageIndex: number;
 		partIndex: number;
+		partId: string;
+		chosen: Map<PressureCondition, Set<string>>;
 	}): boolean {
 		return (
 			this.evaluatePruningPolicy({
@@ -287,29 +359,94 @@ export class Pruner {
 				policyFragment: this.pruningPolicy,
 				messageIndex,
 				partIndex,
+				partId,
+				chosen,
 			}) && !this.partIsRecallRequest({ messages, messageIndex, partIndex })
 		);
 	}
 
+	/**
+	 * Choose parts for each `hasPressure` condition in policy order. A part is a
+	 * candidate when choosing it makes the policy prune it; candidates are taken
+	 * oldest first until they save enough.
+	 */
+	private choosePressureParts({
+		messages,
+		parts,
+		measure,
+	}: {
+		messages: ModelMessage[];
+		parts: { messageIndex: number; partIndex: number; partId: string }[];
+		measure: PressureMeasure | undefined;
+	}): Map<PressureCondition, Set<string>> {
+		const chosen = new Map<PressureCondition, Set<string>>(
+			this.pressureConditions.map((condition) => [condition, new Set()]),
+		);
+		const isPruned = (part: (typeof parts)[number]) =>
+			this.partIsPruned({ messages, ...part, chosen });
+		const currentMask = () =>
+			new Set(parts.filter(isPruned).map((part) => part.partId));
+
+		if (!measure) return chosen;
+		for (const condition of this.pressureConditions) {
+			const mask = currentMask();
+			const over = measure.size(mask) - condition.budget;
+			if (over <= 0) continue;
+			const band =
+				(condition.bufferFactor ?? DEFAULT_PRESSURE_BUFFER_FACTOR) *
+				condition.budget;
+			const required = band > 0 ? Math.ceil(over / band) * band : over;
+			const conditionParts = chosen.get(condition)!;
+			let saved = 0;
+			for (const part of parts) {
+				if (saved >= required) break;
+				if (mask.has(part.partId)) continue;
+				const savings = measure.savings(part.partId);
+				if (savings <= 0) continue;
+				conditionParts.add(part.partId);
+				if (isPruned(part)) {
+					saved += savings;
+				} else {
+					conditionParts.delete(part.partId);
+				}
+			}
+		}
+		return chosen;
+	}
+
 	public prepare({
 		messages: identifiableMessages,
-	}: { messages: IdentifiableMessage[] }) {
+		measure,
+	}: {
+		messages: IdentifiableMessage[];
+		/** Needed for `hasPressure`; without it, no part is under pressure. */
+		measure?: PressureMeasure;
+	}) {
 		const messages = stripIdsFromMessages(identifiableMessages);
 		const mask = new Set<string>();
 		const originalContent = new Map<string, string>();
+		const parts = identifiableMessages.flatMap((message, messageIndex) =>
+			message.parts.map((part, partIndex) => ({
+				messageIndex,
+				partIndex,
+				partId: part.id,
+			})),
+		);
+		const chosen = this.choosePressureParts({ messages, parts, measure });
 
-		for (let mi = 0; mi < identifiableMessages.length; mi++) {
-			for (let pi = 0; pi < identifiableMessages[mi]!.parts.length; pi++) {
-				if (this.partIsPruned({ messages, messageIndex: mi, partIndex: pi })) {
-					const partId = identifiableMessages[mi]!.parts[pi]!.id;
-					mask.add(partId);
-					const part = getPartByIndex({
-						messages,
-						messageIndex: mi,
-						partIndex: pi,
-					});
-					originalContent.set(partId, serializePart(part));
-				}
+		for (const part of parts) {
+			if (this.partIsPruned({ messages, ...part, chosen })) {
+				mask.add(part.partId);
+				originalContent.set(
+					part.partId,
+					serializePart(
+						getPartByIndex({
+							messages,
+							messageIndex: part.messageIndex,
+							partIndex: part.partIndex,
+						}),
+					),
+				);
 			}
 		}
 
