@@ -1,65 +1,20 @@
 import { describe, expect, test } from "bun:test";
 import type { ModelMessage } from "ai";
-import { MockLanguageModelV4 } from "ai/test";
 import { estimateTokenCount } from "tokenx";
-import type { CompactorStore, CompactorSummary } from "./compaction";
 import { Prunella } from "./index";
 import type { PruningPolicy } from "./pruning";
+import {
+	NO_PRUNING,
+	createInMemoryStore,
+	longTurn,
+	makeMockModel,
+	prune,
+	prunedCallIds,
+} from "./test-utils";
 import { attachIdsToMessages } from "./utils";
-
-const PLACEHOLDER_PREFIX = "This part of the message has been pruned";
-
-/** One user turn with `steps` tool calls, each returning a large result. */
-function longTurn(steps: number): ModelMessage[] {
-	const messages: ModelMessage[] = [
-		{ role: "user", content: "Show me everything you can do" },
-	];
-	for (let step = 0; step < steps; step++) {
-		const toolCallId = `call-${step}`;
-		messages.push(
-			{
-				role: "assistant",
-				content: [
-					{
-						type: "tool-call",
-						toolCallId,
-						toolName: "lookup",
-						input: { step },
-					},
-				],
-			},
-			{
-				role: "tool",
-				content: [
-					{
-						type: "tool-result",
-						toolCallId,
-						toolName: "lookup",
-						output: { type: "text", value: `step ${step} `.repeat(300) },
-					},
-				],
-			},
-		);
-	}
-	return messages;
-}
 
 function sizeOf(messages: ModelMessage[]): number {
 	return estimateTokenCount(JSON.stringify(messages));
-}
-
-function prunedCallIds(messages: ModelMessage[]): string[] {
-	return messages.flatMap((message) =>
-		message.role === "tool"
-			? message.content.flatMap((part) =>
-					part.type === "tool-result" &&
-					part.output.type === "text" &&
-					part.output.value.startsWith(PLACEHOLDER_PREFIX)
-						? [part.toolCallId]
-						: [],
-				)
-			: [],
-	);
 }
 
 function pressurePolicy(budget: number, bufferFactor?: number): PruningPolicy {
@@ -74,24 +29,6 @@ function pressurePolicy(budget: number, bufferFactor?: number): PruningPolicy {
 		],
 	};
 }
-
-async function prune(messages: ModelMessage[], pruningPolicy: PruningPolicy) {
-	return new Prunella({ pruningPolicy }).prepare({
-		messages,
-		sessionId: "session",
-		config: undefined,
-	});
-}
-
-describe("olderThan messages", () => {
-	test("counts the messages after a part's message", async () => {
-		const { messages } = await prune(longTurn(3), {
-			AND: [{ hasType: "tool-result" }, { olderThan: { messages: 1 } }],
-		});
-
-		expect(prunedCallIds(messages)).toEqual(["call-0", "call-1"]);
-	});
-});
 
 describe("hasPressure", () => {
 	test("prunes nothing while the conversation is within budget", async () => {
@@ -235,41 +172,24 @@ describe("hasPressure", () => {
 		const parts = attachIdsToMessages(messages).flatMap(
 			(message) => message.parts,
 		);
-		const summaries = new Map<string, CompactorSummary>([
-			[
-				"s1",
-				{
-					id: "s1",
-					sessionId: "session",
-					spans: [{ firstPartId: parts[1]!.id, lastPartId: parts[8]!.id }],
-					text: "Steps 0 to 3.",
-				},
-			],
-		]);
-		const store: CompactorStore = {
-			createSummary: async ({ summary }) => {
-				summaries.set(summary.id, summary);
-			},
-			getSummary: async ({ id }) => summaries.get(id)!,
-			getSummariesForSession: async () => [...summaries.values()],
-			updateSummary: async ({ summary }) => {
-				summaries.set(summary.id, summary);
-			},
-			deleteSummary: async ({ id }) => {
-				summaries.delete(id);
-			},
-		};
+		const store = createInMemoryStore();
+		store.summaries.set("s1", {
+			id: "s1",
+			sessionId: "session",
+			spans: [{ firstPartId: parts[1]!.id, lastPartId: parts[8]!.id }],
+			text: "Steps 0 to 3.",
+		});
 		const withSummary = (pruningPolicy: PruningPolicy) =>
 			new Prunella({
 				pruningPolicy,
 				compaction: {
 					enabled: true,
 					store,
-					model: new MockLanguageModelV4(),
+					model: makeMockModel(),
 					policy: { compactionThreshold: Number.POSITIVE_INFINITY },
 				},
 			}).prepare({ messages, sessionId: "session", config: undefined });
-		const unpruned = await withSummary({ hasRole: "never" as never });
+		const unpruned = await withSummary(NO_PRUNING);
 		const budget = sizeOf(unpruned.messages) - 1;
 
 		const result = await withSummary(pressurePolicy(budget, 0));

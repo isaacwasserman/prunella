@@ -1,67 +1,17 @@
 import { describe, expect, mock, test } from "bun:test";
-import type { LanguageModelV4GenerateResult } from "@ai-sdk/provider";
 import type { ModelMessage } from "ai";
-import { MockLanguageModelV4 } from "ai/test";
 import { estimateTokenCount } from "tokenx";
 import type { CompactorStore, CompactorSummary } from "./compaction";
 import { Prunella } from "./index";
+import {
+	NO_PRUNING,
+	PLACEHOLDER_PREFIX,
+	createInMemoryStore,
+	makeMockModel,
+} from "./test-utils";
 import { attachIdsToMessages } from "./utils";
 
 // --- Test helpers ---
-
-const PLACEHOLDER_PREFIX = "This part of the message has been pruned";
-
-const MOCK_USAGE: LanguageModelV4GenerateResult["usage"] = {
-	inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
-	outputTokens: { total: 10, text: 10, reasoning: 0 },
-};
-
-function makeMockResult(summary: string): LanguageModelV4GenerateResult {
-	return {
-		content: [{ type: "text", text: JSON.stringify({ summary }) }],
-		finishReason: { unified: "stop", raw: "stop" },
-		usage: MOCK_USAGE,
-		warnings: [],
-	};
-}
-
-function makeMockModel(id = "mock") {
-	return new MockLanguageModelV4({
-		modelId: id,
-		doGenerate: async ({ prompt }) => {
-			const text = typeof prompt === "string" ? prompt : JSON.stringify(prompt);
-			const first = text.slice(0, 20);
-			const last = text.slice(-20);
-			return makeMockResult(`${first}...${last}`);
-		},
-	});
-}
-
-function createInMemoryStore(): CompactorStore & {
-	summaries: Map<string, CompactorSummary>;
-} {
-	const summaries = new Map<string, CompactorSummary>();
-	return {
-		summaries,
-		createSummary: async ({ summary }) => {
-			summaries.set(summary.id, summary);
-		},
-		getSummary: async ({ id }) => {
-			const s = summaries.get(id);
-			if (!s) throw new Error(`Summary ${id} not found`);
-			return s;
-		},
-		getSummariesForSession: async ({ sessionId }) => {
-			return [...summaries.values()].filter((s) => s.sessionId === sessionId);
-		},
-		updateSummary: async ({ summary }) => {
-			summaries.set(summary.id, summary);
-		},
-		deleteSummary: async ({ id }) => {
-			summaries.delete(id);
-		},
-	};
-}
 
 function longConversation(turns: number): ModelMessage[] {
 	const messages: ModelMessage[] = [
@@ -903,7 +853,7 @@ describe("edge cases: render step", () => {
 
 	test("output preserves message roles", async () => {
 		const prunella = new Prunella({
-			pruningPolicy: { hasRole: "never-matches" as any },
+			pruningPolicy: NO_PRUNING,
 		});
 		const input: ModelMessage[] = [
 			{ role: "system", content: "sys" },
@@ -997,7 +947,7 @@ describe("compactor hooks", () => {
 		const messages = longConversation(3);
 
 		const prunella = new Prunella({
-			pruningPolicy: { hasRole: "never-matches" as never },
+			pruningPolicy: NO_PRUNING,
 			compaction: {
 				enabled: true,
 				store,
@@ -1028,7 +978,7 @@ describe("compactor hooks", () => {
 		const messages = longConversation(10);
 
 		const prunella = new Prunella({
-			pruningPolicy: { hasRole: "never-matches" as never },
+			pruningPolicy: NO_PRUNING,
 			compaction: {
 				enabled: true,
 				store,
@@ -1069,7 +1019,7 @@ describe("compactor hooks", () => {
 		const onCompactEnd = mock(async (_: any) => {});
 
 		const prunella = new Prunella({
-			pruningPolicy: { hasRole: "never-matches" as never },
+			pruningPolicy: NO_PRUNING,
 			compaction: {
 				enabled: true,
 				store,
@@ -1098,7 +1048,7 @@ describe("compactor hooks", () => {
 		const onCompactEnd = mock(async (_: any) => {});
 
 		const prunella = new Prunella({
-			pruningPolicy: { hasRole: "never-matches" as never },
+			pruningPolicy: NO_PRUNING,
 			compaction: {
 				enabled: true,
 				store,
@@ -1129,7 +1079,7 @@ describe("compactor hooks", () => {
 		const onSummaryCreate = mock(async (_: any) => {});
 
 		const prunella = new Prunella({
-			pruningPolicy: { hasRole: "never-matches" as never },
+			pruningPolicy: NO_PRUNING,
 			compaction: {
 				enabled: true,
 				store,
@@ -1163,7 +1113,7 @@ describe("compactor hooks", () => {
 		const model = makeMockModel();
 		const onSummaryCreate = mock(async (_: any) => {});
 		const prunella = new Prunella({
-			pruningPolicy: { hasRole: "never-matches" as never },
+			pruningPolicy: NO_PRUNING,
 			compaction: {
 				enabled: true,
 				store,
@@ -1226,7 +1176,7 @@ describe("compactor hooks", () => {
 		}
 		const onSummaryMerge = mock(async (_: any) => {});
 		const prunella = new Prunella({
-			pruningPolicy: { hasRole: "never-matches" as never },
+			pruningPolicy: NO_PRUNING,
 			compaction: {
 				enabled: true,
 				store,
@@ -1284,7 +1234,7 @@ describe("compactor hooks", () => {
 		const onSummaryCreate = mock(async (_: any) => {});
 
 		const prunella = new Prunella<TC>({
-			pruningPolicy: { hasRole: "never-matches" as never },
+			pruningPolicy: NO_PRUNING,
 			compaction: {
 				enabled: true,
 				store,
@@ -1324,7 +1274,7 @@ describe("compaction policy", () => {
 	function compactingPrunella({
 		store,
 		model = makeMockModel(),
-		pruningPolicy = { hasRole: "never-matches" as never },
+		pruningPolicy = NO_PRUNING,
 		compactionThreshold = 500,
 		keepRecent,
 	}: {
@@ -1408,7 +1358,7 @@ describe("compaction policy", () => {
 				),
 			);
 		const prunedSize = await render(pruningPolicy);
-		const fullSize = await render({ hasRole: "never-matches" as never });
+		const fullSize = await render(NO_PRUNING);
 		const compactionThreshold = Math.round((prunedSize + fullSize) / 2);
 
 		const withPruning = createInMemoryStore();

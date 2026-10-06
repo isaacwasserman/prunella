@@ -1,8 +1,7 @@
 import { expect, test } from "bun:test";
 import type { ModelMessage } from "ai";
 import { Prunella } from "./index";
-
-const PLACEHOLDER_PREFIX = "This part of the message has been pruned";
+import { PLACEHOLDER_PREFIX } from "./test-utils";
 
 function baseMessages(): ModelMessage[] {
 	return [
