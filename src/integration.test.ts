@@ -3,12 +3,16 @@ import type { ModelMessage } from "ai";
 import { estimateTokenCount } from "tokenx";
 import type { CompactorStore, CompactorSummary } from "./compaction";
 import { Prunella } from "./index";
+import type { PruningPolicy } from "./pruning";
 import {
 	NO_PRUNING,
 	PLACEHOLDER_PREFIX,
 	createInMemoryStore,
 	longTurn,
 	makeMockModel,
+	partsSizeOfLast,
+	resultIds,
+	userTexts,
 } from "./test-utils";
 import { attachIdsToMessages } from "./utils";
 
@@ -1482,5 +1486,104 @@ describe("summaries whose parts changed", () => {
 			"Stale summary.",
 		);
 		expect([...store.summaries.keys()]).not.toContain("stale");
+	});
+});
+
+describe("keepRecent tokens", () => {
+	function compactWithTail(
+		messages: ModelMessage[],
+		tail: number,
+		pruningPolicy: PruningPolicy = NO_PRUNING,
+	) {
+		return new Prunella({
+			pruningPolicy,
+			compaction: {
+				enabled: true,
+				store: createInMemoryStore(),
+				model: makeMockModel(),
+				policy: {
+					compactionThreshold: 0,
+					minCompactableSpan: 0,
+					keepRecent: { tokens: tail },
+				},
+			},
+		}).prepare({ messages, sessionId: "session", config: undefined });
+	}
+
+	/** One user turn with one step of `count` parallel tool calls. */
+	function parallelStep(count: number): ModelMessage[] {
+		const ids = Array.from({ length: count }, (_, call) => `call-${call}`);
+		return [
+			{ role: "user", content: "Show me everything you can do" },
+			{
+				role: "assistant",
+				content: ids.map((toolCallId, call) => ({
+					type: "tool-call" as const,
+					toolCallId,
+					toolName: "lookup",
+					input: { call },
+				})),
+			},
+			{
+				role: "tool",
+				content: ids.map((toolCallId, call) => ({
+					type: "tool-result" as const,
+					toolCallId,
+					toolName: "lookup",
+					output: { type: "text" as const, value: `call ${call} `.repeat(300) },
+				})),
+			},
+		];
+	}
+
+	function callIds(messages: ModelMessage[]): string[] {
+		return messages.flatMap((message) =>
+			message.role === "assistant" && Array.isArray(message.content)
+				? message.content.flatMap((part) =>
+						part.type === "tool-call" ? [part.toolCallId] : [],
+					)
+				: [],
+		);
+	}
+
+	test("summarizes everything before the tail except the latest user message", async () => {
+		const messages = longTurn(10);
+
+		const result = await compactWithTail(
+			messages,
+			partsSizeOfLast(messages, 3),
+		);
+
+		const texts = userTexts(result.messages);
+		expect(texts[0]).toBe("Show me everything you can do");
+		expect(texts[1]).toContain("<Summary");
+		expect(resultIds(result.messages)).toEqual(["call-8", "call-9"]);
+	});
+
+	test("measures the tail as rendered, so pruned parts take less of it", async () => {
+		const messages = longTurn(10);
+		const tail = partsSizeOfLast(messages, 3);
+
+		const verbatim = await compactWithTail(messages, tail);
+		const pruned = await compactWithTail(messages, tail, {
+			AND: [{ hasType: "tool-result" }, { olderThan: { messages: 1 } }],
+		});
+
+		expect(resultIds(pruned.messages).length).toBeGreaterThan(
+			resultIds(verbatim.messages).length,
+		);
+	});
+
+	test("summarizes a tool call and its result together or keeps both", async () => {
+		const messages = parallelStep(10);
+
+		const result = await compactWithTail(
+			messages,
+			partsSizeOfLast(messages, 1) / 4,
+		);
+
+		expect(userTexts(result.messages)[1]).toContain("<Summary");
+		expect(resultIds(result.messages).length).toBeGreaterThan(0);
+		expect(callIds(result.messages)).toEqual(resultIds(result.messages));
 	});
 });

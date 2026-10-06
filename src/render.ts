@@ -1,11 +1,16 @@
 import type { ModelMessage } from "ai";
+import { estimateTokenCount } from "tokenx";
 import {
 	type CompactorSummary,
 	type PartSpan,
 	getPartIdsInSpan,
 	summaryToMessage,
 } from "./compaction";
-import type { IdentifiableMessage } from "./utils";
+import {
+	type IdentifiableMessage,
+	type IdentifiablePart,
+	partTokens,
+} from "./utils";
 
 const RECALL_TOOL_NAME = "recall-pruned";
 
@@ -28,6 +33,16 @@ export function createPlaceholder(
 		return { ...rawPart, input: { pruned: text } };
 	}
 	return { type: "text", text };
+}
+
+/** Tokens of a part as rendered: the placeholder's size when it is pruned. */
+export function renderedPartTokens(
+	part: IdentifiablePart,
+	pruned: boolean,
+): number {
+	return pruned
+		? estimateTokenCount(JSON.stringify(createPlaceholder(part.id, part)))
+		: partTokens(part);
 }
 
 function toMessage(raw: ModelMessage, parts: RenderedPart[]): ModelMessage {

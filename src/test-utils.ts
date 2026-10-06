@@ -124,6 +124,28 @@ export function prunedCallIds(messages: ModelMessage[]): string[] {
 	);
 }
 
+/** The text of every user message, summaries included. */
+export function userTexts(messages: ModelMessage[]): string[] {
+	return messages.flatMap((message) => {
+		if (message.role !== "user") return [];
+		if (typeof message.content === "string") return [message.content];
+		return message.content.flatMap((part) =>
+			part.type === "text" ? [part.text] : [],
+		);
+	});
+}
+
+/** The call IDs of the tool results that were sent. */
+export function resultIds(messages: ModelMessage[]): string[] {
+	return messages.flatMap((message) =>
+		message.role === "tool"
+			? message.content.flatMap((part) =>
+					part.type === "tool-result" ? [part.toolCallId] : [],
+				)
+			: [],
+	);
+}
+
 export async function prune(
 	messages: ModelMessage[],
 	pruningPolicy: PruningPolicy,

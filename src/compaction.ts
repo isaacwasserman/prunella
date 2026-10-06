@@ -11,12 +11,11 @@ import { nanoid } from "nanoid";
 import { estimateTokenCount } from "tokenx";
 import type { CompactorHooks } from "./hooks";
 import { type PartAge, partIsOlderThan } from "./pruning";
-import { renderMessages } from "./render";
+import { renderMessages, renderedPartTokens } from "./render";
 import type { RuntimeConfig } from "./runtime-config";
 import {
 	type IdentifiableMessage,
 	attachIdsToMessages,
-	partTokens,
 	stripIdsFromMessages,
 	tokensAfterParts,
 } from "./utils";
@@ -68,8 +67,9 @@ export type CompactionOptions = {
 	minCompactableSpan?: number;
 	maxIterations?: number;
 	/**
-	 * Parts this recent are never compacted. Defaults to `{ turns: 0 }`, which
-	 * keeps the latest user message and everything after it.
+	 * Parts this recent are never compacted, and neither is the latest user
+	 * message. Defaults to `{ turns: 0 }`, which keeps the latest user message
+	 * and everything after it.
 	 */
 	keepRecent?: PartAge;
 };
@@ -245,53 +245,84 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 	private getUncompactedSpans({
 		messages,
 		existingSummaries,
+		mask,
 	}: {
 		messages: IdentifiableMessage[];
 		existingSummaries: CompactorSummary[];
+		mask: Set<string>;
 	}): PartSpan[] {
 		const spans: PartSpan[] = [];
 		let currentSpan: PartSpan | null = null;
 		const rawMessages = stripIdsFromMessages(messages);
-		const tokensAfter = tokensAfterParts(messages, partTokens);
+		const latestUserMessageIndex = rawMessages.findLastIndex(
+			(message) => message.role === "user",
+		);
+		const tokensAfter = tokensAfterParts(messages, (part) =>
+			renderedPartTokens(part, mask.has(part.id)),
+		);
 
+		const candidates: {
+			partId: string;
+			toolCallId: string | undefined;
+			eligible: boolean;
+			covered: boolean;
+		}[] = [];
 		for (let mi = 0; mi < messages.length; mi++) {
 			if (rawMessages[mi]!.role === "system") continue;
-
 			for (let pi = 0; pi < messages[mi]!.parts.length; pi++) {
-				const part = rawMessages[mi]!.content;
-				const resolvedPart = Array.isArray(part) ? part[pi]! : part;
-				const isCompactable =
-					partIsOlderThan({
-						messages: rawMessages,
-						messageIndex: mi,
-						partIndex: pi,
-						ageLimit: this.options.keepRecent,
-						tokensAfter,
-					}) &&
-					this.options.canCompact({
-						messages: rawMessages,
-						messageIndex: mi,
-						partIndex: pi,
-						message: rawMessages[mi]!,
-						part: resolvedPart,
-					});
-				const partId = messages[mi]!.parts[pi]!.id;
-				const isCovered = existingSummaries.some((s) =>
-					partIsCoveredBySummary({ partId, summary: s, messages }),
-				);
+				const part = messages[mi]!.parts[pi]!;
+				const content = rawMessages[mi]!.content;
+				const resolvedPart = Array.isArray(content) ? content[pi]! : content;
+				candidates.push({
+					partId: part.id,
+					toolCallId:
+						part.type === "tool-call" || part.type === "tool-result"
+							? part.toolCallId
+							: undefined,
+					eligible:
+						mi !== latestUserMessageIndex &&
+						partIsOlderThan({
+							messages: rawMessages,
+							messageIndex: mi,
+							partIndex: pi,
+							ageLimit: this.options.keepRecent,
+							tokensAfter,
+						}) &&
+						this.options.canCompact({
+							messages: rawMessages,
+							messageIndex: mi,
+							partIndex: pi,
+							message: rawMessages[mi]!,
+							part: resolvedPart,
+						}),
+					covered: existingSummaries.some((summary) =>
+						partIsCoveredBySummary({ partId: part.id, summary, messages }),
+					),
+				});
+			}
+		}
 
-				if (isCompactable && !isCovered) {
-					if (!currentSpan) {
-						currentSpan = { firstPartId: partId, lastPartId: partId };
-					} else {
-						currentSpan.lastPartId = partId;
-					}
+		// A tool call and its result are summarized together or kept together.
+		const keptToolCallIds = new Set(
+			candidates
+				.filter((part) => part.toolCallId && !part.eligible && !part.covered)
+				.map((part) => part.toolCallId),
+		);
+
+		for (const part of candidates) {
+			const compactable =
+				part.eligible &&
+				!part.covered &&
+				!(part.toolCallId && keptToolCallIds.has(part.toolCallId));
+			if (compactable) {
+				if (!currentSpan) {
+					currentSpan = { firstPartId: part.partId, lastPartId: part.partId };
 				} else {
-					if (currentSpan) {
-						spans.push(currentSpan);
-						currentSpan = null;
-					}
+					currentSpan.lastPartId = part.partId;
 				}
+			} else if (currentSpan) {
+				spans.push(currentSpan);
+				currentSpan = null;
 			}
 		}
 
@@ -572,6 +603,7 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 			const uncompactedSpans = this.getUncompactedSpans({
 				messages: messagesWithIds,
 				existingSummaries,
+				mask,
 			});
 			const uncompactedTokens = uncompactedSpans.reduce((total, span) => {
 				const partRange = this.getPartRange({

@@ -9,9 +9,13 @@ import {
 } from "./compaction";
 import type { CompactorHooks } from "./hooks";
 import { type PressureMeasure, Pruner, type PruningPolicy } from "./pruning";
-import { createPlaceholder, renderMessages } from "./render";
+import { renderMessages, renderedPartTokens } from "./render";
 import type { RuntimeConfig } from "./runtime-config";
-import { type IdentifiableMessage, attachIdsToMessages } from "./utils";
+import {
+	type IdentifiableMessage,
+	attachIdsToMessages,
+	partTokens,
+} from "./utils";
 
 /** Measure the conversation the way compaction does: rendered, with summaries in place. */
 function measureRendered({
@@ -47,11 +51,7 @@ function measureRendered({
 		savings: (partId) => {
 			const part = parts.get(partId);
 			if (!part || covered.has(partId)) return 0;
-			const { id: _, ...rawPart } = part;
-			return (
-				estimateTokenCount(JSON.stringify(rawPart)) -
-				estimateTokenCount(JSON.stringify(createPlaceholder(partId, part)))
-			);
+			return partTokens(part) - renderedPartTokens(part, true);
 		},
 	};
 }

@@ -22,7 +22,10 @@ export type PartAge =
 			messages: number;
 	  }
 	| {
-			/** Tokens of the parts after it, counted by their original content. */
+			/**
+			 * Tokens of the parts after it. A pruning policy counts their original
+			 * content; compaction's `keepRecent` counts them as rendered, pruned.
+			 */
 			tokens: number;
 	  };
 
