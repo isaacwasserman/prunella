@@ -11,12 +11,13 @@ import { nanoid } from "nanoid";
 import { estimateTokenCount } from "tokenx";
 import type { CompactorHooks } from "./hooks";
 import { type PartAge, partIsOlderThan } from "./pruning";
-import { renderMessages } from "./render";
+import { renderMessages, renderedPartTokens } from "./render";
 import type { RuntimeConfig } from "./runtime-config";
 import {
 	type IdentifiableMessage,
 	attachIdsToMessages,
 	stripIdsFromMessages,
+	tokensAfterParts,
 } from "./utils";
 
 const SYSTEM_PROMPT =
@@ -66,8 +67,9 @@ export type CompactionOptions = {
 	minCompactableSpan?: number;
 	maxIterations?: number;
 	/**
-	 * Parts this recent are never compacted. Defaults to `{ turns: 0 }`, which
-	 * keeps the latest user message and everything after it.
+	 * Parts this recent are never compacted, and neither is the latest user
+	 * message. Defaults to `{ turns: 0 }`, which keeps the latest user message
+	 * and everything after it.
 	 */
 	keepRecent?: PartAge;
 };
@@ -243,51 +245,84 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 	private getUncompactedSpans({
 		messages,
 		existingSummaries,
+		mask,
 	}: {
 		messages: IdentifiableMessage[];
 		existingSummaries: CompactorSummary[];
+		mask: Set<string>;
 	}): PartSpan[] {
 		const spans: PartSpan[] = [];
 		let currentSpan: PartSpan | null = null;
 		const rawMessages = stripIdsFromMessages(messages);
+		const latestUserMessageIndex = rawMessages.findLastIndex(
+			(message) => message.role === "user",
+		);
+		const tokensAfter = tokensAfterParts(messages, (part) =>
+			renderedPartTokens(part, mask.has(part.id)),
+		);
 
+		const candidates: {
+			partId: string;
+			toolCallId: string | undefined;
+			eligible: boolean;
+			covered: boolean;
+		}[] = [];
 		for (let mi = 0; mi < messages.length; mi++) {
 			if (rawMessages[mi]!.role === "system") continue;
-
 			for (let pi = 0; pi < messages[mi]!.parts.length; pi++) {
-				const part = rawMessages[mi]!.content;
-				const resolvedPart = Array.isArray(part) ? part[pi]! : part;
-				const isCompactable =
-					partIsOlderThan({
-						messages: rawMessages,
-						messageIndex: mi,
-						partIndex: pi,
-						ageLimit: this.options.keepRecent,
-					}) &&
-					this.options.canCompact({
-						messages: rawMessages,
-						messageIndex: mi,
-						partIndex: pi,
-						message: rawMessages[mi]!,
-						part: resolvedPart,
-					});
-				const partId = messages[mi]!.parts[pi]!.id;
-				const isCovered = existingSummaries.some((s) =>
-					partIsCoveredBySummary({ partId, summary: s, messages }),
-				);
+				const part = messages[mi]!.parts[pi]!;
+				const content = rawMessages[mi]!.content;
+				const resolvedPart = Array.isArray(content) ? content[pi]! : content;
+				candidates.push({
+					partId: part.id,
+					toolCallId:
+						part.type === "tool-call" || part.type === "tool-result"
+							? part.toolCallId
+							: undefined,
+					eligible:
+						mi !== latestUserMessageIndex &&
+						partIsOlderThan({
+							messages: rawMessages,
+							messageIndex: mi,
+							partIndex: pi,
+							ageLimit: this.options.keepRecent,
+							tokensAfter,
+						}) &&
+						this.options.canCompact({
+							messages: rawMessages,
+							messageIndex: mi,
+							partIndex: pi,
+							message: rawMessages[mi]!,
+							part: resolvedPart,
+						}),
+					covered: existingSummaries.some((summary) =>
+						partIsCoveredBySummary({ partId: part.id, summary, messages }),
+					),
+				});
+			}
+		}
 
-				if (isCompactable && !isCovered) {
-					if (!currentSpan) {
-						currentSpan = { firstPartId: partId, lastPartId: partId };
-					} else {
-						currentSpan.lastPartId = partId;
-					}
+		// A tool call and its result are summarized together or kept together.
+		const keptToolCallIds = new Set(
+			candidates
+				.filter((part) => part.toolCallId && !part.eligible && !part.covered)
+				.map((part) => part.toolCallId),
+		);
+
+		for (const part of candidates) {
+			const compactable =
+				part.eligible &&
+				!part.covered &&
+				!(part.toolCallId && keptToolCallIds.has(part.toolCallId));
+			if (compactable) {
+				if (!currentSpan) {
+					currentSpan = { firstPartId: part.partId, lastPartId: part.partId };
 				} else {
-					if (currentSpan) {
-						spans.push(currentSpan);
-						currentSpan = null;
-					}
+					currentSpan.lastPartId = part.partId;
 				}
+			} else if (currentSpan) {
+				spans.push(currentSpan);
+				currentSpan = null;
 			}
 		}
 
@@ -317,9 +352,13 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 		summaries: CompactorSummary[];
 		messages: IdentifiableMessage[];
 	}): CompactorSummary[] {
+		const start = (summary: CompactorSummary) =>
+			summary.spans[0]
+				? getPartIndex({ messages, id: summary.spans[0].firstPartId })
+				: { messageIndex: -1, partIndex: -1 };
 		return summaries.toSorted((a, b) => {
-			const aIndex = getPartIndex({ messages, id: a.spans[0]!.firstPartId });
-			const bIndex = getPartIndex({ messages, id: b.spans[0]!.firstPartId });
+			const aIndex = start(a);
+			const bIndex = start(b);
 			if (aIndex.messageIndex !== bIndex.messageIndex)
 				return aIndex.messageIndex - bIndex.messageIndex;
 			return aIndex.partIndex - bIndex.partIndex;
@@ -466,10 +505,47 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 		return result.output.summary;
 	}
 
+	/**
+	 * The session's summaries, in conversation order. A span whose first or last
+	 * part is no longer in the conversation is dropped, so the parts it covered
+	 * are sent as they are. A summary with no spans left is not rendered, but its
+	 * text is carried into the next summary.
+	 */
+	public async loadSummaries({
+		messagesWithIds,
+		sessionId,
+		config,
+	}: {
+		messagesWithIds: IdentifiableMessage[];
+		sessionId: string;
+		config: TRuntimeConfig;
+	}): Promise<CompactorSummary[]> {
+		const partIds = new Set(
+			messagesWithIds.flatMap((message) =>
+				message.parts.map((part) => part.id),
+			),
+		);
+		const summaries = await this.store.getSummariesForSession({
+			sessionId,
+			config,
+		});
+		return this.sortSummaries({
+			summaries: summaries.map((summary) => ({
+				...summary,
+				spans: summary.spans.filter(
+					(span) =>
+						partIds.has(span.firstPartId) && partIds.has(span.lastPartId),
+				),
+			})),
+			messages: messagesWithIds,
+		});
+	}
+
 	public async prepare({
 		messages,
 		messagesWithIds = attachIdsToMessages(messages),
 		mask = new Set<string>(),
+		existingSummaries: loadedSummaries,
 		sessionId,
 		config,
 	}: {
@@ -478,6 +554,8 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 		messagesWithIds?: IdentifiableMessage[];
 		/** Pruned part IDs. Compaction measures the conversation as rendered with them pruned. */
 		mask?: Set<string>;
+		/** The session's summaries, when the caller has already loaded them. */
+		existingSummaries?: CompactorSummary[];
 		sessionId: string;
 		config: TRuntimeConfig;
 	}) {
@@ -494,13 +572,9 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 				),
 			);
 
-		let existingSummaries = this.sortSummaries({
-			summaries: await this.store.getSummariesForSession({
-				sessionId,
-				config,
-			}),
-			messages: messagesWithIds,
-		});
+		let existingSummaries =
+			loadedSummaries ??
+			(await this.loadSummaries({ messagesWithIds, sessionId, config }));
 
 		let started = false;
 		let summariesCreated = 0;
@@ -529,6 +603,7 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 			const uncompactedSpans = this.getUncompactedSpans({
 				messages: messagesWithIds,
 				existingSummaries,
+				mask,
 			});
 			const uncompactedTokens = uncompactedSpans.reduce((total, span) => {
 				const partRange = this.getPartRange({
@@ -609,12 +684,10 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 			} else {
 				break;
 			}
-			existingSummaries = this.sortSummaries({
-				summaries: await this.store.getSummariesForSession({
-					sessionId,
-					config,
-				}),
-				messages: messagesWithIds,
+			existingSummaries = await this.loadSummaries({
+				messagesWithIds,
+				sessionId,
+				config,
 			});
 		}
 

@@ -1,11 +1,16 @@
 import type { ModelMessage } from "ai";
+import { estimateTokenCount } from "tokenx";
 import {
 	type CompactorSummary,
 	type PartSpan,
 	getPartIdsInSpan,
 	summaryToMessage,
 } from "./compaction";
-import type { IdentifiableMessage } from "./utils";
+import {
+	type IdentifiableMessage,
+	type IdentifiablePart,
+	partTokens,
+} from "./utils";
 
 const RECALL_TOOL_NAME = "recall-pruned";
 
@@ -15,7 +20,7 @@ type RenderedPart = Exclude<ModelMessage["content"], string>[number];
  * A tool call or result keeps its type, so tool messages stay valid and every
  * result still has its call.
  */
-function createPlaceholder(
+export function createPlaceholder(
 	partId: string,
 	originalPart: IdentifiableMessage["parts"][number],
 ): RenderedPart {
@@ -28,6 +33,16 @@ function createPlaceholder(
 		return { ...rawPart, input: { pruned: text } };
 	}
 	return { type: "text", text };
+}
+
+/** Tokens of a part as rendered: the placeholder's size when it is pruned. */
+export function renderedPartTokens(
+	part: IdentifiablePart,
+	pruned: boolean,
+): number {
+	return pruned
+		? estimateTokenCount(JSON.stringify(createPlaceholder(part.id, part)))
+		: partTokens(part);
 }
 
 function toMessage(raw: ModelMessage, parts: RenderedPart[]): ModelMessage {

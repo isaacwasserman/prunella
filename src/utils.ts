@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
 import type { ModelMessage } from "ai";
 import { urlAlphabet } from "nanoid";
+import { estimateTokenCount } from "tokenx";
 
-export type IdentifiablePart = Exclude<
-	ModelMessage["content"],
-	string
->[number] & {
+type Part = Exclude<ModelMessage["content"], string>[number];
+
+export type IdentifiablePart = Part & {
 	id: string;
 };
 
@@ -66,6 +66,50 @@ export function getPartByIndex({
 	return part;
 }
 
+/** A message's parts; string content is one text part. */
+function partsOf(message: ModelMessage): Part[] {
+	return typeof message.content === "string"
+		? [{ type: "text", text: message.content }]
+		: message.content;
+}
+
+/**
+ * The fields that identify a part. Provider fields are left out, and a tool
+ * call or result is known by its call ID, so a message keeps its IDs when it
+ * is stored and converted again.
+ */
+function canonicalPart(part: Part | null): unknown {
+	if (!part) return null;
+	switch (part.type) {
+		case "text":
+		case "reasoning":
+			return { type: part.type, text: part.text };
+		case "tool-call":
+		case "tool-result":
+			return {
+				type: part.type,
+				toolCallId: part.toolCallId,
+				toolName: part.toolName,
+			};
+		default: {
+			const {
+				providerOptions: _,
+				providerMetadata: __,
+				...content
+			} = part as Part & {
+				providerOptions?: unknown;
+				providerMetadata?: unknown;
+			};
+			return content;
+		}
+	}
+}
+
+function canonicalMessage(message: ModelMessage | null): unknown {
+	if (!message) return null;
+	return { role: message.role, parts: partsOf(message).map(canonicalPart) };
+}
+
 export function getMessageIdentity({
 	messages,
 	messageIndex,
@@ -78,10 +122,10 @@ export function getMessageIdentity({
 		messages,
 		messageIndex,
 	});
-	const identityHash = hashString(
-		JSON.stringify(previousMessage) + JSON.stringify(targetMessage),
+	return hashString(
+		JSON.stringify(canonicalMessage(previousMessage)) +
+			JSON.stringify(canonicalMessage(targetMessage)),
 	);
-	return identityHash;
 }
 
 export function getMessagePartIdentity({
@@ -97,38 +141,19 @@ export function getMessagePartIdentity({
 		messageIndex > 0
 			? getMessageByIndex({ messages, messageIndex: messageIndex - 1 })
 			: null;
-	const previousMessagePart =
-		partIndex > 0
-			? getPartByIndex({
-					messages,
-					messageIndex,
-					partIndex: partIndex - 1,
-				})
-			: null;
-	const targetPart = getPartByIndex({
-		messages,
-		messageIndex,
-		partIndex,
-	});
-
-	const identityHash = shortHashString(
-		JSON.stringify(previousMessage) +
-			JSON.stringify(previousMessagePart) +
-			JSON.stringify(targetPart),
+	const parts = partsOf(getMessageByIndex({ messages, messageIndex }));
+	return shortHashString(
+		JSON.stringify(canonicalMessage(previousMessage)) +
+			JSON.stringify(canonicalPart(parts[partIndex - 1] ?? null)) +
+			JSON.stringify(canonicalPart(parts[partIndex] ?? null)),
 	);
-
-	return identityHash;
 }
 
 export function attachIdsToParts({
 	messages,
 	messageIndex,
 }: { messages: ModelMessage[]; messageIndex: number }): IdentifiablePart[] {
-	const message = getMessageByIndex({ messages, messageIndex });
-	const parts: Exclude<ModelMessage["content"], string> =
-		typeof message.content === "string"
-			? [{ type: "text" as const, text: message.content }]
-			: message.content;
+	const parts = partsOf(getMessageByIndex({ messages, messageIndex }));
 	return parts.map((part, partIndex) => ({
 		...part,
 		id: getMessagePartIdentity({ messages, messageIndex, partIndex }),
@@ -151,4 +176,29 @@ export function stripIdsFromMessages(
 	return messages.map((message) => ({
 		...message.raw,
 	}));
+}
+
+/** Tokens of the parts after a part, by message and part index. */
+export type TokensAfter = (messageIndex: number, partIndex: number) => number;
+
+/** Tokens of a part's content, without its ID. */
+export function partTokens(part: IdentifiablePart): number {
+	const { id: _, ...rawPart } = part;
+	return estimateTokenCount(JSON.stringify(rawPart));
+}
+
+export function tokensAfterParts(
+	messages: IdentifiableMessage[],
+	sizeOf: (part: IdentifiablePart) => number,
+): TokensAfter {
+	const after = messages.map((message) => message.parts.map(() => 0));
+	let total = 0;
+	for (let mi = messages.length - 1; mi >= 0; mi--) {
+		const parts = messages[mi]!.parts;
+		for (let pi = parts.length - 1; pi >= 0; pi--) {
+			after[mi]![pi] = total;
+			total += sizeOf(parts[pi]!);
+		}
+	}
+	return (messageIndex, partIndex) => after[messageIndex]?.[partIndex] ?? 0;
 }
