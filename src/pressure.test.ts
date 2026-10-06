@@ -10,6 +10,7 @@ import {
 	makeMockModel,
 	prune,
 	prunedCallIds,
+	userTexts,
 } from "./test-utils";
 import { attachIdsToMessages } from "./utils";
 
@@ -196,5 +197,37 @@ describe("hasPressure", () => {
 
 		expect(sizeOf(result.messages)).toBeLessThanOrEqual(budget);
 		expect(prunedCallIds(result.messages)).toEqual(["call-4"]);
+	});
+});
+
+describe("pressure after compaction", () => {
+	test("chooses parts again once a summary covers what was pruned", async () => {
+		const messages = longTurn(10);
+		const budget = sizeOf(messages.slice(-4));
+
+		const result = await new Prunella({
+			pruningPolicy: {
+				AND: [
+					{ OR: [{ hasType: "tool-call" }, { hasType: "tool-result" }] },
+					{ olderThan: { messages: 1 } },
+					{ hasPressure: { budget } },
+				],
+			},
+			compaction: {
+				enabled: true,
+				store: createInMemoryStore(),
+				model: makeMockModel(),
+				policy: {
+					compactionThreshold: budget,
+					minCompactableSpan: 0,
+					keepRecent: { tokens: Math.round(budget / 4) },
+				},
+			},
+		}).prepare({ messages, sessionId: "session", config: undefined });
+
+		expect(userTexts(result.messages)[1]).toContain("<Summary");
+		expect(sizeOf(result.messages)).toBeLessThanOrEqual(budget);
+		expect(prunedCallIds(result.messages)).toEqual([]);
+		expect(Object.keys(result.tools)).toEqual([]);
 	});
 });

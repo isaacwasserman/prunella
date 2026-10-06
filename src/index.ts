@@ -99,10 +99,15 @@ export class Prunella<TRuntimeConfig extends RuntimeConfig = undefined> {
 				})
 			: [];
 
-		const { mask, tools: pruningTools } = this.pruner.prepare({
-			messages: messagesWithIds,
-			measure: measureRendered({ messagesWithIds, existingSummaries }),
-		});
+		const pruneWith = (summaries: CompactorSummary[]) =>
+			this.pruner.prepare({
+				messages: messagesWithIds,
+				measure: measureRendered({
+					messagesWithIds,
+					existingSummaries: summaries,
+				}),
+			});
+		let { mask, tools: pruningTools } = pruneWith(existingSummaries);
 
 		const compaction = this.compactor
 			? await this.compactor.prepare({
@@ -115,6 +120,14 @@ export class Prunella<TRuntimeConfig extends RuntimeConfig = undefined> {
 				})
 			: undefined;
 		const summaries = compaction?.summaries ?? [];
+		// Each new or merged summary gets a new ID, so the IDs show a change.
+		const summariesChanged =
+			summaries.map((summary) => summary.id).join() !==
+			existingSummaries.map((summary) => summary.id).join();
+		if (summariesChanged) {
+			// Choose pressure parts again, so parts that a summary now covers do not cause more pruning.
+			({ mask, tools: pruningTools } = pruneWith(summaries));
+		}
 
 		const rendered = renderMessages({
 			messages: messagesWithIds,
