@@ -17,6 +17,16 @@ import {
 	partTokens,
 } from "./utils";
 
+export type {
+	CompactionOptions,
+	CompactorStore,
+	CompactorSummary,
+	PartSpan,
+} from "./compaction";
+export type { CompactorHooks } from "./hooks";
+export type { PartAge, PressureCondition, PruningPolicy } from "./pruning";
+export type { RuntimeConfig } from "./runtime-config";
+
 /** Measure the conversation the way compaction does: rendered, with summaries in place. */
 function measureRendered({
 	messagesWithIds,
