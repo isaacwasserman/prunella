@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { ModelMessage } from "ai";
 import { urlAlphabet } from "nanoid";
+import { estimateTokenCount } from "tokenx";
 
 type Part = Exclude<ModelMessage["content"], string>[number];
 
@@ -175,4 +176,29 @@ export function stripIdsFromMessages(
 	return messages.map((message) => ({
 		...message.raw,
 	}));
+}
+
+/** Tokens of the parts after a part, by message and part index. */
+export type TokensAfter = (messageIndex: number, partIndex: number) => number;
+
+/** Tokens of a part's content, without its ID. */
+export function partTokens(part: IdentifiablePart): number {
+	const { id: _, ...rawPart } = part;
+	return estimateTokenCount(JSON.stringify(rawPart));
+}
+
+export function tokensAfterParts(
+	messages: IdentifiableMessage[],
+	sizeOf: (part: IdentifiablePart) => number,
+): TokensAfter {
+	const after = messages.map((message) => message.parts.map(() => 0));
+	let total = 0;
+	for (let mi = messages.length - 1; mi >= 0; mi--) {
+		const parts = messages[mi]!.parts;
+		for (let pi = parts.length - 1; pi >= 0; pi--) {
+			after[mi]![pi] = total;
+			total += sizeOf(parts[pi]!);
+		}
+	}
+	return (messageIndex, partIndex) => after[messageIndex]?.[partIndex] ?? 0;
 }

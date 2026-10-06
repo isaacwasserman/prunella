@@ -4,6 +4,7 @@ import { MockLanguageModelV4 } from "ai/test";
 import type { CompactorStore, CompactorSummary } from "./compaction";
 import { Prunella } from "./index";
 import type { PruningPolicy } from "./pruning";
+import { attachIdsToMessages, partTokens } from "./utils";
 
 export const PLACEHOLDER_PREFIX = "This part of the message has been pruned";
 
@@ -95,6 +96,17 @@ export function longTurn(steps: number): ModelMessage[] {
 		);
 	}
 	return messages;
+}
+
+/** Tokens of the parts in the last `count` messages, as a tokens part age counts them. */
+export function partsSizeOfLast(
+	messages: ModelMessage[],
+	count: number,
+): number {
+	return attachIdsToMessages(messages)
+		.slice(-count)
+		.flatMap((message) => message.parts)
+		.reduce((total, part) => total + partTokens(part), 0);
 }
 
 /** The call IDs of the tool results that were pruned. */

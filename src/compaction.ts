@@ -16,7 +16,9 @@ import type { RuntimeConfig } from "./runtime-config";
 import {
 	type IdentifiableMessage,
 	attachIdsToMessages,
+	partTokens,
 	stripIdsFromMessages,
+	tokensAfterParts,
 } from "./utils";
 
 const SYSTEM_PROMPT =
@@ -250,6 +252,7 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 		const spans: PartSpan[] = [];
 		let currentSpan: PartSpan | null = null;
 		const rawMessages = stripIdsFromMessages(messages);
+		const tokensAfter = tokensAfterParts(messages, partTokens);
 
 		for (let mi = 0; mi < messages.length; mi++) {
 			if (rawMessages[mi]!.role === "system") continue;
@@ -263,6 +266,7 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 						messageIndex: mi,
 						partIndex: pi,
 						ageLimit: this.options.keepRecent,
+						tokensAfter,
 					}) &&
 					this.options.canCompact({
 						messages: rawMessages,

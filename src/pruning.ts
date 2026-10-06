@@ -1,10 +1,12 @@
 import { type ModelMessage, type ToolCallPart, jsonSchema, tool } from "ai";
-import type { RuntimeConfig } from "./runtime-config";
 import {
 	type IdentifiableMessage,
+	type TokensAfter,
 	getMessageByIndex,
 	getPartByIndex,
+	partTokens,
 	stripIdsFromMessages,
+	tokensAfterParts,
 } from "./utils";
 
 const RECALL_TOOL_NAME = "recall-pruned";
@@ -18,6 +20,10 @@ export type PartAge =
 	  }
 	| {
 			messages: number;
+	  }
+	| {
+			/** Tokens of the parts after it, counted by their original content. */
+			tokens: number;
 	  };
 
 export const DEFAULT_PRESSURE_BUFFER_FACTOR = 0.1;
@@ -107,17 +113,20 @@ function serializePart(part: string | ModelMessage["content"][number]): string {
 	}
 }
 
-/** Whether a part is older than `ageLimit`, counted in user turns, parts, or messages after it. */
+/** Whether a part is older than `ageLimit`, counted in user turns, parts, messages, or tokens after it. */
 export function partIsOlderThan({
 	messages,
 	messageIndex,
 	partIndex,
 	ageLimit,
+	tokensAfter,
 }: {
 	messages: ModelMessage[];
 	messageIndex: number;
 	partIndex: number;
 	ageLimit: PartAge;
+	/** Needed for `{ tokens }`. */
+	tokensAfter?: TokensAfter;
 }): boolean {
 	if ("turns" in ageLimit) {
 		let turnAge = 0;
@@ -172,6 +181,10 @@ export function partIsOlderThan({
 	if ("messages" in ageLimit) {
 		return messages.length - 1 - messageIndex > ageLimit.messages;
 	}
+	if ("tokens" in ageLimit) {
+		if (!tokensAfter) throw new Error("A tokens part age needs part sizes");
+		return tokensAfter(messageIndex, partIndex) > ageLimit.tokens;
+	}
 	throw new Error("Invalid part age construction");
 }
 
@@ -209,6 +222,7 @@ export class Pruner {
 		partIndex,
 		partId,
 		chosen,
+		tokensAfter,
 	}: {
 		messages: ModelMessage[];
 		policyFragment: PruningPolicy;
@@ -216,6 +230,7 @@ export class Pruner {
 		partIndex: number;
 		partId: string;
 		chosen: Map<PressureCondition, Set<string>>;
+		tokensAfter: TokensAfter;
 	}): boolean {
 		const policyKeys = Object.keys(policyFragment) as AllPruningPolicyKeys[];
 		return policyKeys.every((policyKey) => {
@@ -232,6 +247,7 @@ export class Pruner {
 							partIndex,
 							partId,
 							chosen,
+							tokensAfter,
 						}),
 					);
 				}
@@ -247,6 +263,7 @@ export class Pruner {
 							partIndex,
 							partId,
 							chosen,
+							tokensAfter,
 						}),
 					);
 				}
@@ -261,6 +278,7 @@ export class Pruner {
 						partIndex,
 						partId,
 						chosen,
+						tokensAfter,
 					});
 				}
 				case "olderThan": {
@@ -270,6 +288,7 @@ export class Pruner {
 						messageIndex,
 						partIndex,
 						ageLimit,
+						tokensAfter,
 					});
 				}
 				case "hasRole": {
@@ -346,12 +365,14 @@ export class Pruner {
 		partIndex,
 		partId,
 		chosen,
+		tokensAfter,
 	}: {
 		messages: ModelMessage[];
 		messageIndex: number;
 		partIndex: number;
 		partId: string;
 		chosen: Map<PressureCondition, Set<string>>;
+		tokensAfter: TokensAfter;
 	}): boolean {
 		return (
 			this.evaluatePruningPolicy({
@@ -361,6 +382,7 @@ export class Pruner {
 				partIndex,
 				partId,
 				chosen,
+				tokensAfter,
 			}) && !this.partIsRecallRequest({ messages, messageIndex, partIndex })
 		);
 	}
@@ -374,16 +396,18 @@ export class Pruner {
 		messages,
 		parts,
 		measure,
+		tokensAfter,
 	}: {
 		messages: ModelMessage[];
 		parts: { messageIndex: number; partIndex: number; partId: string }[];
 		measure: PressureMeasure | undefined;
+		tokensAfter: TokensAfter;
 	}): Map<PressureCondition, Set<string>> {
 		const chosen = new Map<PressureCondition, Set<string>>(
 			this.pressureConditions.map((condition) => [condition, new Set()]),
 		);
 		const isPruned = (part: (typeof parts)[number]) =>
-			this.partIsPruned({ messages, ...part, chosen });
+			this.partIsPruned({ messages, ...part, chosen, tokensAfter });
 		const currentMask = () =>
 			new Set(parts.filter(isPruned).map((part) => part.partId));
 
@@ -432,10 +456,20 @@ export class Pruner {
 				partId: part.id,
 			})),
 		);
-		const chosen = this.choosePressureParts({ messages, parts, measure });
+		let sizes: TokensAfter | undefined;
+		const tokensAfter: TokensAfter = (messageIndex, partIndex) => {
+			sizes ??= tokensAfterParts(identifiableMessages, partTokens);
+			return sizes(messageIndex, partIndex);
+		};
+		const chosen = this.choosePressureParts({
+			messages,
+			parts,
+			measure,
+			tokensAfter,
+		});
 
 		for (const part of parts) {
-			if (this.partIsPruned({ messages, ...part, chosen })) {
+			if (this.partIsPruned({ messages, ...part, chosen, tokensAfter })) {
 				mask.add(part.partId);
 				originalContent.set(
 					part.partId,
