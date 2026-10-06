@@ -7,6 +7,7 @@ import {
 	NO_PRUNING,
 	PLACEHOLDER_PREFIX,
 	createInMemoryStore,
+	longTurn,
 	makeMockModel,
 } from "./test-utils";
 import { attachIdsToMessages } from "./utils";
@@ -1444,5 +1445,42 @@ describe("compaction policy", () => {
 		});
 		// TODO: Expect "recall-summarized" too when the compactor offers it again.
 		expect(Object.keys(busy.tools).sort()).toEqual(["recall-pruned"]);
+	});
+});
+
+describe("summaries whose parts changed", () => {
+	test("send the parts as they are and carry the summary text forward", async () => {
+		const messages = longTurn(4);
+		const store = createInMemoryStore();
+		store.summaries.set("stale", {
+			id: "stale",
+			sessionId: "session",
+			spans: [{ firstPartId: "missing1", lastPartId: "missing2" }],
+			text: "Stale summary.",
+		});
+		const model = makeMockModel();
+		const prepare = (compactionThreshold: number) =>
+			new Prunella({
+				pruningPolicy: NO_PRUNING,
+				compaction: {
+					enabled: true,
+					store,
+					model,
+					policy: {
+						compactionThreshold,
+						minCompactableSpan: 0,
+						keepRecent: { messages: 1 },
+					},
+				},
+			}).prepare({ messages, sessionId: "session", config: undefined });
+
+		const unchanged = await prepare(Number.POSITIVE_INFINITY);
+		await prepare(0);
+
+		expect(unchanged.messages).toEqual(messages);
+		expect(JSON.stringify(model.doGenerateCalls[0]?.prompt)).toContain(
+			"Stale summary.",
+		);
+		expect([...store.summaries.keys()]).not.toContain("stale");
 	});
 });

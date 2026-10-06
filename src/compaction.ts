@@ -317,9 +317,13 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 		summaries: CompactorSummary[];
 		messages: IdentifiableMessage[];
 	}): CompactorSummary[] {
+		const start = (summary: CompactorSummary) =>
+			summary.spans[0]
+				? getPartIndex({ messages, id: summary.spans[0].firstPartId })
+				: { messageIndex: -1, partIndex: -1 };
 		return summaries.toSorted((a, b) => {
-			const aIndex = getPartIndex({ messages, id: a.spans[0]!.firstPartId });
-			const bIndex = getPartIndex({ messages, id: b.spans[0]!.firstPartId });
+			const aIndex = start(a);
+			const bIndex = start(b);
 			if (aIndex.messageIndex !== bIndex.messageIndex)
 				return aIndex.messageIndex - bIndex.messageIndex;
 			return aIndex.partIndex - bIndex.partIndex;
@@ -466,7 +470,12 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 		return result.output.summary;
 	}
 
-	/** The session's summaries, in conversation order. */
+	/**
+	 * The session's summaries, in conversation order. A span whose first or last
+	 * part is no longer in the conversation is dropped, so the parts it covered
+	 * are sent as they are. A summary with no spans left is not rendered, but its
+	 * text is carried into the next summary.
+	 */
 	public async loadSummaries({
 		messagesWithIds,
 		sessionId,
@@ -476,11 +485,23 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 		sessionId: string;
 		config: TRuntimeConfig;
 	}): Promise<CompactorSummary[]> {
+		const partIds = new Set(
+			messagesWithIds.flatMap((message) =>
+				message.parts.map((part) => part.id),
+			),
+		);
+		const summaries = await this.store.getSummariesForSession({
+			sessionId,
+			config,
+		});
 		return this.sortSummaries({
-			summaries: await this.store.getSummariesForSession({
-				sessionId,
-				config,
-			}),
+			summaries: summaries.map((summary) => ({
+				...summary,
+				spans: summary.spans.filter(
+					(span) =>
+						partIds.has(span.firstPartId) && partIds.has(span.lastPartId),
+				),
+			})),
 			messages: messagesWithIds,
 		});
 	}
@@ -627,12 +648,10 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 			} else {
 				break;
 			}
-			existingSummaries = this.sortSummaries({
-				summaries: await this.store.getSummariesForSession({
-					sessionId,
-					config,
-				}),
-				messages: messagesWithIds,
+			existingSummaries = await this.loadSummaries({
+				messagesWithIds,
+				sessionId,
+				config,
 			});
 		}
 
