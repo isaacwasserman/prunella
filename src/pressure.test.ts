@@ -3,6 +3,7 @@ import type { ModelMessage } from "ai";
 import { Prunella } from "./index";
 import type { PruningPolicy } from "./pruning";
 import {
+	CALLER_TOOLS,
 	NO_PRUNING,
 	createInMemoryStore,
 	estimator,
@@ -49,8 +50,41 @@ describe("hasPressure", () => {
 		expect(pruned).toEqual(
 			Array.from({ length: pruned.length }, (_, step) => `call-${step}`),
 		);
-		expect(sizeOf(result.messages)).toBeLessThanOrEqual(budget);
+		expect(estimator.count(result)).toBeLessThanOrEqual(budget);
 		expect(Object.keys(result.tools)).toEqual(["recall-pruned"]);
+	});
+
+	test("counts the tools that are sent with the messages", async () => {
+		const messages = longTurn(10);
+		const budget = sizeOf(messages) + 1;
+
+		const withoutTools = await prune(messages, pressurePolicy(budget));
+		const withTools = await prune(
+			messages,
+			pressurePolicy(budget),
+			CALLER_TOOLS,
+		);
+
+		expect(prunedCallIds(withoutTools.messages)).toEqual([]);
+		expect(prunedCallIds(withTools.messages).length).toBeGreaterThan(0);
+		expect(
+			estimator.count({
+				messages: withTools.messages,
+				tools: { ...CALLER_TOOLS, ...withTools.tools },
+			}),
+		).toBeLessThanOrEqual(budget);
+		expect(Object.keys(withTools.tools)).toEqual(["recall-pruned"]);
+	});
+
+	test("counts the recall tool that pruning adds", async () => {
+		const messages = longTurn(10);
+		const budget = sizeOf(messages) - 1;
+
+		const result = await prune(messages, pressurePolicy(budget, 0));
+
+		const recallTool = estimator.count({ messages: [], tools: result.tools });
+		expect(recallTool).toBeGreaterThan(estimator.count({ messages: [] }));
+		expect(estimator.count(result)).toBeLessThanOrEqual(budget);
 	});
 
 	test("drops to about budget × (1 − bufferFactor) when the budget is first crossed", async () => {
@@ -59,7 +93,7 @@ describe("hasPressure", () => {
 
 		const result = await prune(messages, pressurePolicy(budget, 0.3));
 
-		expect(sizeOf(result.messages)).toBeLessThanOrEqual(budget * 0.7 + 1);
+		expect(estimator.count(result)).toBeLessThanOrEqual(budget * 0.7 + 1);
 	});
 
 	test("keeps the same parts pruned while the conversation grows within a band", async () => {
@@ -90,7 +124,7 @@ describe("hasPressure", () => {
 		expect(prunedCallIds(after.messages).length).toBeGreaterThan(
 			prunedCallIds(before.messages).length,
 		);
-		expect(sizeOf(after.messages)).toBeLessThanOrEqual(budget);
+		expect(estimator.count(after)).toBeLessThanOrEqual(budget);
 	});
 
 	test("defaults bufferFactor to 0.1", async () => {
@@ -112,7 +146,7 @@ describe("hasPressure", () => {
 		const exact = await prune(messages, pressurePolicy(budget, 0));
 		const buffered = await prune(messages, pressurePolicy(budget, 0.3));
 
-		expect(sizeOf(exact.messages)).toBeLessThanOrEqual(budget);
+		expect(estimator.count(exact)).toBeLessThanOrEqual(budget);
 		expect(prunedCallIds(exact.messages).length).toBeLessThan(
 			prunedCallIds(buffered.messages).length,
 		);
@@ -197,7 +231,7 @@ describe("hasPressure", () => {
 
 		const result = await withSummary(pressurePolicy(budget, 0));
 
-		expect(sizeOf(result.messages)).toBeLessThanOrEqual(budget);
+		expect(estimator.count(result)).toBeLessThanOrEqual(budget);
 		expect(prunedCallIds(result.messages)).toEqual(["call-4"]);
 	});
 });
@@ -230,7 +264,7 @@ describe("pressure after compaction", () => {
 		}).prepare({ messages, sessionId: "session", config: undefined });
 
 		expect(userTexts(result.messages)[1]).toContain("<Summary");
-		expect(sizeOf(result.messages)).toBeLessThanOrEqual(budget);
+		expect(estimator.count(result)).toBeLessThanOrEqual(budget);
 		expect(prunedCallIds(result.messages)).toEqual([]);
 		expect(Object.keys(result.tools)).toEqual([]);
 	});
