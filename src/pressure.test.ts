@@ -1,22 +1,19 @@
 import { describe, expect, test } from "bun:test";
 import type { ModelMessage } from "ai";
-import { estimateTokenCount } from "tokenx";
 import { Prunella } from "./index";
 import type { PruningPolicy } from "./pruning";
 import {
 	NO_PRUNING,
 	createInMemoryStore,
+	estimator,
 	longTurn,
 	makeMockModel,
 	prune,
 	prunedCallIds,
+	sizeOf,
 	userTexts,
 } from "./test-utils";
 import { attachIdsToMessages } from "./utils";
-
-function sizeOf(messages: ModelMessage[]): number {
-	return estimateTokenCount(JSON.stringify(messages));
-}
 
 function pressurePolicy(budget: number, bufferFactor?: number): PruningPolicy {
 	return {
@@ -163,7 +160,11 @@ describe("hasPressure", () => {
 			{ budget: -1 },
 		]) {
 			expect(
-				() => new Prunella({ pruningPolicy: { hasPressure: condition } }),
+				() =>
+					new Prunella({
+						estimator,
+						pruningPolicy: { hasPressure: condition },
+					}),
 			).toThrow();
 		}
 	});
@@ -182,6 +183,7 @@ describe("hasPressure", () => {
 		});
 		const withSummary = (pruningPolicy: PruningPolicy) =>
 			new Prunella({
+				estimator,
 				pruningPolicy,
 				compaction: {
 					enabled: true,
@@ -203,9 +205,11 @@ describe("hasPressure", () => {
 describe("pressure after compaction", () => {
 	test("chooses parts again once a summary covers what was pruned", async () => {
 		const messages = longTurn(10);
-		const budget = sizeOf(messages.slice(-4));
+		// Room for the user message, the last step, and a summary, but not for nine placeholders.
+		const budget = sizeOf([messages[0]!, ...messages.slice(-2)]) + 100;
 
 		const result = await new Prunella({
+			estimator,
 			pruningPolicy: {
 				AND: [
 					{ OR: [{ hasType: "tool-call" }, { hasType: "tool-result" }] },

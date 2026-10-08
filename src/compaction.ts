@@ -1,4 +1,5 @@
 import type { StandardSchemaV1 } from "@standard-schema/spec";
+import type { UsageEstimator } from "@tokenxl/count";
 import {
 	type LanguageModel,
 	type ModelMessage,
@@ -8,10 +9,9 @@ import {
 } from "ai";
 import dedent from "dedent";
 import { nanoid } from "nanoid";
-import { estimateTokenCount } from "tokenx";
 import type { CompactorHooks } from "./hooks";
 import { type PartAge, partIsOlderThan } from "./pruning";
-import { renderMessages, renderedPartTokens } from "./render";
+import { measureParts, renderMessages } from "./render";
 import type { RuntimeConfig } from "./runtime-config";
 import {
 	type IdentifiableMessage,
@@ -212,6 +212,7 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 	private options: Required<CompactionOptions>;
 	private summaryPrompt: string | undefined;
 	private hooks: CompactorHooks<TRuntimeConfig> | undefined;
+	private estimator: UsageEstimator;
 
 	constructor({
 		store,
@@ -219,14 +220,17 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 		options,
 		summaryPrompt,
 		hooks,
+		estimator,
 	}: {
 		store: CompactorStore<TRuntimeConfig>;
 		model: LanguageModel;
 		options?: CompactionOptions;
 		summaryPrompt?: string;
 		hooks?: CompactorHooks<TRuntimeConfig>;
+		estimator: UsageEstimator;
 	}) {
 		this.store = store;
+		this.estimator = estimator;
 		this.model = model;
 		this.options = {
 			canCompact: ({ message }) => {
@@ -257,8 +261,9 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 		const latestUserMessageIndex = rawMessages.findLastIndex(
 			(message) => message.role === "user",
 		);
+		const partSize = measureParts(this.estimator, messages);
 		const tokensAfter = tokensAfterParts(messages, (part) =>
-			renderedPartTokens(part, mask.has(part.id)),
+			partSize(part, mask.has(part.id)),
 		);
 
 		const candidates: {
@@ -562,15 +567,13 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 		const estimateConversationTokens = (
 			existingSummaries: CompactorSummary[],
 		) =>
-			estimateTokenCount(
-				JSON.stringify(
-					renderMessages({
-						messages: messagesWithIds,
-						mask,
-						summaries: existingSummaries,
-					}),
-				),
-			);
+			this.estimator.count({
+				messages: renderMessages({
+					messages: messagesWithIds,
+					mask,
+					summaries: existingSummaries,
+				}),
+			});
 
 		let existingSummaries =
 			loadedSummaries ??
@@ -612,11 +615,13 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 				});
 				return (
 					total +
-					estimateTokenCount(
-						JSON.stringify(
-							renderMessages({ messages: partRange, mask, summaries: [] }),
-						),
-					)
+					this.estimator.count({
+						messages: renderMessages({
+							messages: partRange,
+							mask,
+							summaries: [],
+						}),
+					})
 				);
 			}, 0);
 			if (

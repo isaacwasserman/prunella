@@ -1,6 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { ModelMessage } from "ai";
-import { estimateTokenCount } from "tokenx";
 import type { CompactorStore, CompactorSummary } from "./compaction";
 import { Prunella } from "./index";
 import type { PruningPolicy } from "./pruning";
@@ -8,10 +7,12 @@ import {
 	NO_PRUNING,
 	PLACEHOLDER_PREFIX,
 	createInMemoryStore,
+	estimator,
 	longTurn,
 	makeMockModel,
 	partsSizeOfLast,
 	resultIds,
+	sizeOf,
 	userTexts,
 } from "./test-utils";
 import { attachIdsToMessages } from "./utils";
@@ -70,6 +71,7 @@ function pruneIdFrom(text: string): string {
 describe("edge cases: empty and minimal inputs", () => {
 	test("empty messages array returns empty output", async () => {
 		const prunella = new Prunella({
+			estimator,
 			pruningPolicy: { hasRole: "assistant" },
 		});
 		const { messages, tools } = await prunella.prepare({
@@ -83,6 +85,7 @@ describe("edge cases: empty and minimal inputs", () => {
 
 	test("single user message with string content", async () => {
 		const prunella = new Prunella({
+			estimator,
 			pruningPolicy: { hasRole: "assistant" },
 		});
 		const { messages } = await prunella.prepare({
@@ -96,6 +99,7 @@ describe("edge cases: empty and minimal inputs", () => {
 
 	test("single system message is never pruned", async () => {
 		const prunella = new Prunella({
+			estimator,
 			pruningPolicy: { olderThan: { turns: 0 } },
 		});
 		const { messages } = await prunella.prepare({
@@ -110,6 +114,7 @@ describe("edge cases: empty and minimal inputs", () => {
 describe("edge cases: pruning", () => {
 	test("nothing pruned when no parts match policy", async () => {
 		const prunella = new Prunella({
+			estimator,
 			pruningPolicy: { hasRole: "tool" },
 		});
 		const input: ModelMessage[] = [
@@ -128,6 +133,7 @@ describe("edge cases: pruning", () => {
 
 	test("all messages pruned except system", async () => {
 		const prunella = new Prunella({
+			estimator,
 			pruningPolicy: { NOT: { hasRole: "system" } },
 		});
 		const input: ModelMessage[] = [
@@ -147,6 +153,7 @@ describe("edge cases: pruning", () => {
 
 	test("multi-part message: only matching parts are pruned", async () => {
 		const prunella = new Prunella({
+			estimator,
 			pruningPolicy: { hasType: "tool-call" },
 		});
 		const input: ModelMessage[] = [
@@ -182,6 +189,7 @@ describe("edge cases: pruning", () => {
 
 	test("recall tool-call parts are never pruned even when matching policy", async () => {
 		const prunella = new Prunella({
+			estimator,
 			pruningPolicy: { hasType: "tool-call" },
 		});
 		const input: ModelMessage[] = [
@@ -209,6 +217,7 @@ describe("edge cases: pruning", () => {
 
 	test("recall tool returns 'Part not found' for invalid pruneId", async () => {
 		const prunella = new Prunella({
+			estimator,
 			pruningPolicy: { hasRole: "assistant" },
 		});
 		const { tools } = await prunella.prepare({
@@ -231,6 +240,7 @@ describe("edge cases: pruning", () => {
 
 	test("recall tool returns serialized tool-call content", async () => {
 		const prunella = new Prunella({
+			estimator,
 			pruningPolicy: {
 				AND: [
 					{ hasType: "tool-call" },
@@ -282,6 +292,7 @@ describe("edge cases: pruning", () => {
 
 	test("olderThan with steps mode", async () => {
 		const prunella = new Prunella({
+			estimator,
 			pruningPolicy: {
 				AND: [{ hasRole: "user" }, { olderThan: { steps: 3 } }],
 			},
@@ -305,6 +316,7 @@ describe("edge cases: pruning", () => {
 
 	test("complex AND/OR/NOT policy", async () => {
 		const prunella = new Prunella({
+			estimator,
 			pruningPolicy: {
 				AND: [
 					{
@@ -345,6 +357,7 @@ describe("edge cases: pruning", () => {
 describe("edge cases: part ID stability", () => {
 	test("same messages produce identical masks across calls", async () => {
 		const prunella = new Prunella({
+			estimator,
 			pruningPolicy: { hasRole: "assistant" },
 		});
 		const input: ModelMessage[] = [
@@ -370,6 +383,7 @@ describe("edge cases: part ID stability", () => {
 
 	test("appending messages does not change existing part IDs", async () => {
 		const prunella = new Prunella({
+			estimator,
 			pruningPolicy: { hasRole: "assistant" },
 		});
 		const base: ModelMessage[] = [
@@ -407,6 +421,7 @@ describe("edge cases: compaction", () => {
 	test("no compaction when below threshold", async () => {
 		const store = createInMemoryStore();
 		const prunella = new Prunella({
+			estimator,
 			pruningPolicy: { hasRole: "assistant" },
 			compaction: {
 				enabled: true,
@@ -430,6 +445,7 @@ describe("edge cases: compaction", () => {
 	test("canCompact returning false for everything prevents compaction", async () => {
 		const store = createInMemoryStore();
 		const prunella = new Prunella({
+			estimator,
 			pruningPolicy: { hasRole: "assistant" },
 			compaction: {
 				enabled: true,
@@ -454,6 +470,7 @@ describe("edge cases: compaction", () => {
 	test("system messages are never included in compaction spans", async () => {
 		const store = createInMemoryStore();
 		const prunella = new Prunella({
+			estimator,
 			pruningPolicy: {
 				AND: [{ hasRole: "assistant" }, { olderThan: { turns: 100 } }],
 			},
@@ -490,6 +507,7 @@ describe("edge cases: compaction", () => {
 		const messages = longConversation(10);
 
 		const p1 = new Prunella({
+			estimator,
 			pruningPolicy: { hasRole: "assistant" },
 			compaction: {
 				enabled: true,
@@ -531,6 +549,7 @@ describe("edge cases: compaction", () => {
 		const messages = longConversation(10);
 
 		const prunella = new Prunella({
+			estimator,
 			pruningPolicy: {
 				AND: [{ hasRole: "assistant" }, { olderThan: { turns: 100 } }],
 			},
@@ -560,6 +579,7 @@ describe("edge cases: compaction", () => {
 	test("maxIterations=0 prevents any compaction", async () => {
 		const store = createInMemoryStore();
 		const prunella = new Prunella({
+			estimator,
 			pruningPolicy: { hasRole: "assistant" },
 			compaction: {
 				enabled: true,
@@ -585,6 +605,7 @@ describe("edge cases: pruning + compaction interaction", () => {
 	test("compaction takes precedence over pruning for covered parts", async () => {
 		const store = createInMemoryStore();
 		const prunella = new Prunella({
+			estimator,
 			pruningPolicy: { olderThan: { turns: 1 } },
 			compaction: {
 				enabled: true,
@@ -628,6 +649,7 @@ describe("edge cases: pruning + compaction interaction", () => {
 		const messages = longConversation(5);
 
 		const prunella = new Prunella({
+			estimator,
 			pruningPolicy: {
 				AND: [{ hasRole: "assistant" }, { olderThan: { turns: 2 } }],
 			},
@@ -671,6 +693,7 @@ describe("edge cases: pruning + compaction interaction", () => {
 		const model = makeMockModel();
 
 		const prunella = new Prunella({
+			estimator,
 			pruningPolicy: {
 				AND: [{ hasRole: "assistant" }, { olderThan: { turns: 100 } }],
 			},
@@ -725,6 +748,7 @@ describe("edge cases: pruning + compaction interaction", () => {
 describe("edge cases: render step", () => {
 	test("a message with nothing pruned or summarized is passed through as is", async () => {
 		const prunella = new Prunella({
+			estimator,
 			pruningPolicy: { hasRole: "tool" },
 		});
 		const input: ModelMessage[] = [
@@ -742,6 +766,7 @@ describe("edge cases: render step", () => {
 
 	test("a pruned tool result stays a tool result for its call", async () => {
 		const prunella = new Prunella({
+			estimator,
 			pruningPolicy: { hasType: "tool-result" },
 		});
 		const { messages } = await prunella.prepare({
@@ -786,6 +811,7 @@ describe("edge cases: render step", () => {
 
 	test("message with all parts pruned still appears with placeholders", async () => {
 		const prunella = new Prunella({
+			estimator,
 			pruningPolicy: { hasRole: "assistant" },
 		});
 		const { messages } = await prunella.prepare({
@@ -816,6 +842,7 @@ describe("edge cases: render step", () => {
 
 	test("each pruned part gets a unique pruneId", async () => {
 		const prunella = new Prunella({
+			estimator,
 			pruningPolicy: { hasRole: "assistant" },
 		});
 		const { messages, tools } = await prunella.prepare({
@@ -858,6 +885,7 @@ describe("edge cases: render step", () => {
 
 	test("output preserves message roles", async () => {
 		const prunella = new Prunella({
+			estimator,
 			pruningPolicy: NO_PRUNING,
 		});
 		const input: ModelMessage[] = [
@@ -918,6 +946,7 @@ describe("runtime config", () => {
 	test("config is forwarded to every store method", async () => {
 		const store = createConfigAwareStore();
 		const prunella = new Prunella<TestConfig>({
+			estimator,
 			pruningPolicy: { hasRole: "assistant" },
 			compaction: {
 				enabled: true,
@@ -952,6 +981,7 @@ describe("compactor hooks", () => {
 		const messages = longConversation(3);
 
 		const prunella = new Prunella({
+			estimator,
 			pruningPolicy: NO_PRUNING,
 			compaction: {
 				enabled: true,
@@ -983,6 +1013,7 @@ describe("compactor hooks", () => {
 		const messages = longConversation(10);
 
 		const prunella = new Prunella({
+			estimator,
 			pruningPolicy: NO_PRUNING,
 			compaction: {
 				enabled: true,
@@ -1024,6 +1055,7 @@ describe("compactor hooks", () => {
 		const onCompactEnd = mock(async (_: any) => {});
 
 		const prunella = new Prunella({
+			estimator,
 			pruningPolicy: NO_PRUNING,
 			compaction: {
 				enabled: true,
@@ -1053,6 +1085,7 @@ describe("compactor hooks", () => {
 		const onCompactEnd = mock(async (_: any) => {});
 
 		const prunella = new Prunella({
+			estimator,
 			pruningPolicy: NO_PRUNING,
 			compaction: {
 				enabled: true,
@@ -1084,6 +1117,7 @@ describe("compactor hooks", () => {
 		const onSummaryCreate = mock(async (_: any) => {});
 
 		const prunella = new Prunella({
+			estimator,
 			pruningPolicy: NO_PRUNING,
 			compaction: {
 				enabled: true,
@@ -1118,6 +1152,7 @@ describe("compactor hooks", () => {
 		const model = makeMockModel();
 		const onSummaryCreate = mock(async (_: any) => {});
 		const prunella = new Prunella({
+			estimator,
 			pruningPolicy: NO_PRUNING,
 			compaction: {
 				enabled: true,
@@ -1181,6 +1216,7 @@ describe("compactor hooks", () => {
 		}
 		const onSummaryMerge = mock(async (_: any) => {});
 		const prunella = new Prunella({
+			estimator,
 			pruningPolicy: NO_PRUNING,
 			compaction: {
 				enabled: true,
@@ -1239,6 +1275,7 @@ describe("compactor hooks", () => {
 		const onSummaryCreate = mock(async (_: any) => {});
 
 		const prunella = new Prunella<TC>({
+			estimator,
 			pruningPolicy: NO_PRUNING,
 			compaction: {
 				enabled: true,
@@ -1290,6 +1327,7 @@ describe("compaction policy", () => {
 		keepRecent?: { turns: number };
 	}) {
 		return new Prunella({
+			estimator,
 			pruningPolicy,
 			compaction: {
 				enabled: true,
@@ -1351,16 +1389,14 @@ describe("compaction policy", () => {
 		const render = async (
 			policy: ConstructorParameters<typeof Prunella>[0]["pruningPolicy"],
 		) =>
-			estimateTokenCount(
-				JSON.stringify(
-					(
-						await new Prunella({ pruningPolicy: policy }).prepare({
-							messages,
-							sessionId: "size",
-							config: undefined,
-						})
-					).messages,
-				),
+			sizeOf(
+				(
+					await new Prunella({ estimator, pruningPolicy: policy }).prepare({
+						messages,
+						sessionId: "size",
+						config: undefined,
+					})
+				).messages,
 			);
 		const prunedSize = await render(pruningPolicy);
 		const fullSize = await render(NO_PRUNING);
@@ -1465,6 +1501,7 @@ describe("summaries whose parts changed", () => {
 		const model = makeMockModel();
 		const prepare = (compactionThreshold: number) =>
 			new Prunella({
+				estimator,
 				pruningPolicy: NO_PRUNING,
 				compaction: {
 					enabled: true,
@@ -1496,6 +1533,7 @@ describe("keepRecent tokens", () => {
 		pruningPolicy: PruningPolicy = NO_PRUNING,
 	) {
 		return new Prunella({
+			estimator,
 			pruningPolicy,
 			compaction: {
 				enabled: true,

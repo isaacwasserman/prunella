@@ -33,17 +33,18 @@
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
     "@changesets/cli": "^2.30.0",
+    "@tokenxl/count": "^0.0.0",
     "@types/bun": "latest",
     "@types/node": "^26.3.0",
     "ai": "^7.0.0",
     "typescript": "^5.7.0"
   },
   "peerDependencies": {
+    "@tokenxl/count": "^0.0.0",
     "ai": "^7.0.0"
   },
   "dependencies": {
     "dedent": "^1.7.2",
-    "nanoid": "^6.0.1",
-    "tokenx": "^2.1.0"
+    "nanoid": "^6.0.1"
   }
 }

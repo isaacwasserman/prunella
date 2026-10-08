@@ -5,15 +5,17 @@ Policy-driven pruning of AI SDK conversation messages, with a recall tool to res
 ## Install
 
 ```bash
-bun add prunella
+bun add prunella @tokenxl/count
 ```
 
 ## Usage
 
 ```ts
+import { createUsageEstimator } from "@tokenxl/count";
 import { Prunella } from "prunella";
 
 const prunella = new Prunella({
+	estimator: createUsageEstimator("anthropic/claude-sonnet-5.5"),
 	pruningPolicy: {
 		AND: [{ hasType: "tool-result" }, { olderThan: { turns: 1 } }],
 	},
@@ -27,6 +29,8 @@ const { messages, tools } = await prunella.prepare({
 
 await generateText({ model, messages, tools: { ...myTools, ...tools } });
 ```
+
+`estimator` counts tokens. Make it with `createUsageEstimator` from [`@tokenxl/count`](https://github.com/isaacwasserman/tokenx/tree/main/packages/count), with the profile of the model that gets the messages. Prunella counts the whole message array as one request, so message overhead is in the count. A part's size is its share of that count.
 
 `prepare` replaces each pruned part with a placeholder that holds a `pruneId`. When a part is pruned, `tools` contains `recall-pruned`, which returns the original content of a part. Part IDs come from the content of the conversation, so the same conversation always gets the same IDs.
 
@@ -56,6 +60,7 @@ A part age is one of:
 
 ```ts
 const prunella = new Prunella({
+	estimator,
 	pruningPolicy,
 	compaction: {
 		enabled: true,

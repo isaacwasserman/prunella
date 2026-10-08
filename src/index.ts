@@ -1,5 +1,5 @@
+import type { UsageEstimator } from "@tokenxl/count";
 import type { LanguageModel, ModelMessage } from "ai";
-import { estimateTokenCount } from "tokenx";
 import {
 	type CompactionOptions,
 	Compactor,
@@ -9,13 +9,9 @@ import {
 } from "./compaction";
 import type { CompactorHooks } from "./hooks";
 import { type PressureMeasure, Pruner, type PruningPolicy } from "./pruning";
-import { renderMessages, renderedPartTokens } from "./render";
+import { measureParts, renderMessages } from "./render";
 import type { RuntimeConfig } from "./runtime-config";
-import {
-	type IdentifiableMessage,
-	attachIdsToMessages,
-	partTokens,
-} from "./utils";
+import { type IdentifiableMessage, attachIdsToMessages } from "./utils";
 
 export type {
 	CompactionOptions,
@@ -29,9 +25,11 @@ export type { RuntimeConfig } from "./runtime-config";
 
 /** Measure the conversation the way compaction does: rendered, with summaries in place. */
 function measureRendered({
+	estimator,
 	messagesWithIds,
 	existingSummaries,
 }: {
+	estimator: UsageEstimator;
 	messagesWithIds: IdentifiableMessage[];
 	existingSummaries: CompactorSummary[];
 }): PressureMeasure {
@@ -47,21 +45,20 @@ function measureRendered({
 			),
 		),
 	);
+	const partSize = measureParts(estimator, messagesWithIds);
 	return {
 		size: (mask) =>
-			estimateTokenCount(
-				JSON.stringify(
-					renderMessages({
-						messages: messagesWithIds,
-						mask,
-						summaries: existingSummaries,
-					}),
-				),
-			),
+			estimator.count({
+				messages: renderMessages({
+					messages: messagesWithIds,
+					mask,
+					summaries: existingSummaries,
+				}),
+			}),
 		savings: (partId) => {
 			const part = parts.get(partId);
 			if (!part || covered.has(partId)) return 0;
-			return partTokens(part) - renderedPartTokens(part, true);
+			return partSize(part, false) - partSize(part, true);
 		},
 	};
 }
@@ -69,8 +66,14 @@ function measureRendered({
 export class Prunella<TRuntimeConfig extends RuntimeConfig = undefined> {
 	private pruner: Pruner;
 	private compactor: Compactor<TRuntimeConfig> | undefined;
+	private estimator: UsageEstimator;
 
 	constructor(args: {
+		/**
+		 * Counts tokens, for example `createUsageEstimator("anthropic/claude-sonnet-5.5")`
+		 * from `@tokenxl/count`. Use a profile for the model that gets the messages.
+		 */
+		estimator: UsageEstimator;
 		pruningPolicy: PruningPolicy;
 		compaction?: {
 			enabled: true;
@@ -81,8 +84,10 @@ export class Prunella<TRuntimeConfig extends RuntimeConfig = undefined> {
 			hooks?: CompactorHooks<TRuntimeConfig>;
 		};
 	}) {
+		this.estimator = args.estimator;
 		this.pruner = new Pruner({
 			pruningPolicy: args.pruningPolicy,
+			estimator: args.estimator,
 		});
 		this.compactor = args.compaction
 			? new Compactor<TRuntimeConfig>({
@@ -91,6 +96,7 @@ export class Prunella<TRuntimeConfig extends RuntimeConfig = undefined> {
 					options: args.compaction.policy,
 					summaryPrompt: args.compaction.summaryPrompt,
 					hooks: args.compaction.hooks,
+					estimator: args.estimator,
 				})
 			: undefined;
 	}
@@ -113,6 +119,7 @@ export class Prunella<TRuntimeConfig extends RuntimeConfig = undefined> {
 			this.pruner.prepare({
 				messages: messagesWithIds,
 				measure: measureRendered({
+					estimator: this.estimator,
 					messagesWithIds,
 					existingSummaries: summaries,
 				}),
