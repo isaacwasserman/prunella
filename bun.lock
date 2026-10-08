@@ -11,14 +11,14 @@
       "devDependencies": {
         "@biomejs/biome": "^1.9.4",
         "@changesets/cli": "^2.30.0",
-        "@tokenxl/count": "^0.0.0",
+        "@tokenxl/count": "^0.1.0",
         "@types/bun": "latest",
         "@types/node": "^26.3.0",
         "ai": "^7.0.0",
         "typescript": "^5.7.0",
       },
       "peerDependencies": {
-        "@tokenxl/count": "^0.0.0",
+        "@tokenxl/count": "^0.1.0",
         "ai": "^7.0.0",
       },
     },
@@ -98,7 +98,7 @@
 
     "@standard-schema/spec": ["@standard-schema/spec@1.1.0", "", {}, "sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w=="],
 
-    "@tokenxl/count": ["@tokenxl/count@0.0.0", "", { "peerDependencies": { "ai": "^5.0.0 || ^6.0.0 || ^7.0.0" }, "optionalPeers": ["ai"], "bin": { "tokenxl": "bin/tokenxl.mjs" } }, "sha512-+LAU/hBJ4bihZbQNMK2Nr1n/IpHYUB39+cphX4X1/vgsrwnwpo/C4Kn5vY9gIFz5I6jqdLoUYKaN+AngCB5sAw=="],
+    "@tokenxl/count": ["@tokenxl/count@0.1.0", "", { "peerDependencies": { "ai": "^5.0.0 || ^6.0.0 || ^7.0.0" }, "optionalPeers": ["ai"], "bin": { "tokenxl": "bin/tokenxl.mjs" } }, "sha512-rm0sx51I0MySXEghzAFlaLFnc3sPbkhUCsxtL56hvWeg8VesXi9TUECrVRcROv53B7g6gjbRtrYPopyTNw/q6g=="],
 
     "@types/bun": ["@types/bun@1.4.0", "", { "dependencies": { "bun-types": "1.4.0" } }, "sha512-K+lZULY23vRgK/CfTjFIV+tyifaNdSMlPh9j+6mQ/cLfpOznLyAuzgV/JQysyECpkBQLVMSyvjlr2fBUSA9wFQ=="],
 
