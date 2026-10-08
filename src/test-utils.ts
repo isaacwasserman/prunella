@@ -1,6 +1,6 @@
 import type { LanguageModelV4GenerateResult } from "@ai-sdk/provider";
 import { createUsageEstimator } from "@tokenxl/count";
-import type { ModelMessage } from "ai";
+import { type ModelMessage, type ToolSet, jsonSchema, tool } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 import type { CompactorStore, CompactorSummary } from "./compaction";
 import { Prunella } from "./index";
@@ -15,6 +15,18 @@ export const estimator = createUsageEstimator();
 export function sizeOf(messages: ModelMessage[]): number {
 	return estimator.count({ messages });
 }
+
+/** Tools that the caller sends with the messages. */
+export const CALLER_TOOLS: ToolSet = {
+	search: tool({
+		description: `Searches the documents. ${"Use precise terms. ".repeat(20)}`,
+		inputSchema: jsonSchema<{ query: string }>({
+			type: "object",
+			properties: { query: { type: "string", description: "The query." } },
+			required: ["query"],
+		}),
+	}),
+};
 
 export const PLACEHOLDER_PREFIX = "This part of the message has been pruned";
 
@@ -161,9 +173,11 @@ export function resultIds(messages: ModelMessage[]): string[] {
 export async function prune(
 	messages: ModelMessage[],
 	pruningPolicy: PruningPolicy,
+	tools?: ToolSet,
 ) {
 	return new Prunella({ estimator, pruningPolicy }).prepare({
 		messages,
+		tools,
 		sessionId: "session",
 		config: undefined,
 	});

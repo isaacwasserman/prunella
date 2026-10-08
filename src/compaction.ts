@@ -4,6 +4,7 @@ import {
 	type LanguageModel,
 	type ModelMessage,
 	Output,
+	type ToolSet,
 	generateText,
 	jsonSchema,
 } from "ai";
@@ -551,6 +552,7 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 		messagesWithIds = attachIdsToMessages(messages),
 		mask = new Set<string>(),
 		existingSummaries: loadedSummaries,
+		tools,
 		sessionId,
 		config,
 	}: {
@@ -561,6 +563,8 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 		mask?: Set<string>;
 		/** The session's summaries, when the caller has already loaded them. */
 		existingSummaries?: CompactorSummary[];
+		/** The tools sent with the messages. They only add to the conversation's token count. */
+		tools?: ToolSet;
 		sessionId: string;
 		config: TRuntimeConfig;
 	}) {
@@ -573,6 +577,7 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 					mask,
 					summaries: existingSummaries,
 				}),
+				tools,
 			});
 
 		let existingSummaries =

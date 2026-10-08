@@ -1,5 +1,5 @@
 import type { UsageEstimator } from "@tokenxl/count";
-import type { LanguageModel, ModelMessage } from "ai";
+import type { LanguageModel, ModelMessage, ToolSet } from "ai";
 import {
 	type CompactionOptions,
 	Compactor,
@@ -8,7 +8,12 @@ import {
 	getPartIdsInSpan,
 } from "./compaction";
 import type { CompactorHooks } from "./hooks";
-import { type PressureMeasure, Pruner, type PruningPolicy } from "./pruning";
+import {
+	type PressureMeasure,
+	Pruner,
+	type PruningPolicy,
+	requestTools,
+} from "./pruning";
 import { measureParts, renderMessages } from "./render";
 import type { RuntimeConfig } from "./runtime-config";
 import { type IdentifiableMessage, attachIdsToMessages } from "./utils";
@@ -28,10 +33,12 @@ function measureRendered({
 	estimator,
 	messagesWithIds,
 	existingSummaries,
+	tools,
 }: {
 	estimator: UsageEstimator;
 	messagesWithIds: IdentifiableMessage[];
 	existingSummaries: CompactorSummary[];
+	tools: ToolSet | undefined;
 }): PressureMeasure {
 	const parts = new Map(
 		messagesWithIds.flatMap((message) =>
@@ -46,6 +53,8 @@ function measureRendered({
 		),
 	);
 	const partSize = measureParts(estimator, messagesWithIds);
+	const toolsSize = (mask: Set<string>) =>
+		estimator.count({ messages: [], tools: requestTools(tools, mask) });
 	return {
 		size: (mask) =>
 			estimator.count({
@@ -54,7 +63,9 @@ function measureRendered({
 					mask,
 					summaries: existingSummaries,
 				}),
+				tools: requestTools(tools, mask),
 			}),
+		pruneOverhead: toolsSize(new Set(["pruned"])) - toolsSize(new Set()),
 		savings: (partId) => {
 			const part = parts.get(partId);
 			if (!part || covered.has(partId)) return 0;
@@ -103,9 +114,20 @@ export class Prunella<TRuntimeConfig extends RuntimeConfig = undefined> {
 
 	public async prepare({
 		messages,
+		tools,
 		sessionId,
 		config,
-	}: { messages: ModelMessage[]; sessionId: string; config: TRuntimeConfig }) {
+	}: {
+		messages: ModelMessage[];
+		/**
+		 * The tools sent with the messages. They only add to the token counts of
+		 * the whole request (`hasPressure` budgets and `compactionThreshold`),
+		 * together with `recall-pruned` when a part is pruned.
+		 */
+		tools?: ToolSet;
+		sessionId: string;
+		config: TRuntimeConfig;
+	}) {
 		const messagesWithIds = attachIdsToMessages(messages);
 		const existingSummaries = this.compactor
 			? await this.compactor.loadSummaries({
@@ -122,6 +144,7 @@ export class Prunella<TRuntimeConfig extends RuntimeConfig = undefined> {
 					estimator: this.estimator,
 					messagesWithIds,
 					existingSummaries: summaries,
+					tools,
 				}),
 			});
 		let { mask, tools: pruningTools } = pruneWith(existingSummaries);
@@ -132,6 +155,7 @@ export class Prunella<TRuntimeConfig extends RuntimeConfig = undefined> {
 					messagesWithIds,
 					mask,
 					existingSummaries,
+					tools: requestTools(tools, mask),
 					sessionId,
 					config,
 				})

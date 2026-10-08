@@ -1,5 +1,11 @@
 import type { UsageEstimator } from "@tokenxl/count";
-import { type ModelMessage, type ToolCallPart, jsonSchema, tool } from "ai";
+import {
+	type ModelMessage,
+	type ToolCallPart,
+	type ToolSet,
+	jsonSchema,
+	tool,
+} from "ai";
 import { measureParts } from "./render";
 import {
 	type IdentifiableMessage,
@@ -11,6 +17,31 @@ import {
 } from "./utils";
 
 const RECALL_TOOL_NAME = "recall-pruned";
+
+/** The definition of `recall-pruned`, without `execute`. Token counts use it. */
+const recallToolDefinition = tool({
+	description: "Recall pruned part.",
+	inputSchema: jsonSchema({
+		type: "object",
+		properties: {
+			pruneId: {
+				type: "string",
+				description: "The pruneId of the part to recall.",
+			},
+		},
+		required: ["pruneId"],
+	}),
+});
+
+/** The tools of the request: `recall-pruned` is sent when a part is pruned. */
+export function requestTools(
+	tools: ToolSet | undefined,
+	mask: Set<string>,
+): ToolSet | undefined {
+	return mask.size > 0
+		? { ...tools, [RECALL_TOOL_NAME]: recallToolDefinition }
+		: tools;
+}
 
 export type PartAge =
 	| {
@@ -47,8 +78,10 @@ export type PressureCondition = {
 
 /** How the pruner measures the conversation it renders. */
 export type PressureMeasure = {
-	/** Tokens of the rendered conversation with `mask` pruned. */
+	/** Tokens of the rendered request with `mask` pruned. */
 	size: (mask: Set<string>) => number;
+	/** Tokens that the first pruned part adds: the `recall-pruned` definition. */
+	pruneOverhead: number;
 	/** Tokens saved by pruning one part. */
 	savings: (partId: string) => number;
 };
@@ -423,8 +456,11 @@ export class Pruner {
 		if (!measure) return chosen;
 		for (const condition of this.pressureConditions) {
 			const mask = currentMask();
-			const over = measure.size(mask) - condition.budget;
-			if (over <= 0) continue;
+			const size = measure.size(mask);
+			if (size <= condition.budget) continue;
+			// When nothing is pruned yet, pruning also adds the recall tool.
+			const over =
+				size - condition.budget + (mask.size === 0 ? measure.pruneOverhead : 0);
 			const band =
 				(condition.bufferFactor ?? DEFAULT_PRESSURE_BUFFER_FACTOR) *
 				condition.budget;
@@ -499,17 +535,7 @@ export class Pruner {
 		}
 
 		const recallTool = tool({
-			description: "Recall pruned part.",
-			inputSchema: jsonSchema({
-				type: "object",
-				properties: {
-					pruneId: {
-						type: "string",
-						description: "The pruneId of the part to recall.",
-					},
-				},
-				required: ["pruneId"],
-			}),
+			...recallToolDefinition,
 			execute: (input) => {
 				const content = originalContent.get(
 					(input as { pruneId: string }).pruneId,

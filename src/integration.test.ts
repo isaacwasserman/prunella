@@ -4,6 +4,7 @@ import type { CompactorStore, CompactorSummary } from "./compaction";
 import { Prunella } from "./index";
 import type { PruningPolicy } from "./pruning";
 import {
+	CALLER_TOOLS,
 	NO_PRUNING,
 	PLACEHOLDER_PREFIX,
 	createInMemoryStore,
@@ -1050,6 +1051,77 @@ describe("compactor hooks", () => {
 		expect(endParams.summariesMerged).toBe(0);
 	});
 
+	test("counts the tools that are sent with the messages toward compactionThreshold", async () => {
+		const messages = longConversation(10);
+		const onCompactStart = mock(async (_: any) => {});
+		const prunella = new Prunella({
+			estimator,
+			pruningPolicy: NO_PRUNING,
+			compaction: {
+				enabled: true,
+				store: createInMemoryStore(),
+				model: makeMockModel(),
+				policy: {
+					compactionThreshold: sizeOf(messages) + 1,
+					minCompactableSpan: 100,
+					maxIterations: 1,
+				},
+				hooks: { onCompactStart },
+			},
+		});
+
+		await prunella.prepare({
+			messages,
+			sessionId: "tools-without",
+			config: undefined,
+		});
+		expect(onCompactStart).not.toHaveBeenCalled();
+
+		const result = await prunella.prepare({
+			messages,
+			tools: CALLER_TOOLS,
+			sessionId: "tools-with",
+			config: undefined,
+		});
+		expect(onCompactStart).toHaveBeenCalledTimes(1);
+		expect(onCompactStart.mock.calls[0]![0].estimatedTokens).toBe(
+			estimator.count({ messages, tools: CALLER_TOOLS }),
+		);
+		expect(Object.keys(result.tools)).not.toContain("search");
+	});
+
+	test("counts recall-pruned toward compactionThreshold when a part is pruned", async () => {
+		const messages = longConversation(10);
+		const pruningPolicy: PruningPolicy = { hasRole: "assistant" };
+		const pruned = await new Prunella({ estimator, pruningPolicy }).prepare({
+			messages,
+			sessionId: "recall-size",
+			config: undefined,
+		});
+		const onCompactStart = mock(async (_: any) => {});
+
+		await new Prunella({
+			estimator,
+			pruningPolicy,
+			compaction: {
+				enabled: true,
+				store: createInMemoryStore(),
+				model: makeMockModel(),
+				policy: {
+					compactionThreshold: 0,
+					minCompactableSpan: 0,
+					maxIterations: 1,
+				},
+				hooks: { onCompactStart },
+			},
+		}).prepare({ messages, sessionId: "recall-size", config: undefined });
+
+		expect(Object.keys(pruned.tools)).toEqual(["recall-pruned"]);
+		expect(onCompactStart.mock.calls[0]![0].estimatedTokens).toBe(
+			estimator.count(pruned),
+		);
+	});
+
 	test("compaction is skipped when onCompactStart returns false", async () => {
 		const store = createInMemoryStore();
 		const onCompactEnd = mock(async (_: any) => {});
@@ -1384,19 +1456,28 @@ describe("compaction policy", () => {
 	});
 
 	test("measures the conversation with pruned parts as placeholders", async () => {
-		const messages = longConversation(10);
+		// Varied answers, so a placeholder is much smaller than its part.
+		const messages = longConversation(10).map((message, index) =>
+			message.role === "assistant"
+				? {
+						...message,
+						content: Array.from(
+							{ length: 100 },
+							(_, word) => `answer${index}word${word}`,
+						).join(" "),
+					}
+				: message,
+		);
 		const pruningPolicy = { hasRole: "assistant" as const };
 		const render = async (
 			policy: ConstructorParameters<typeof Prunella>[0]["pruningPolicy"],
 		) =>
-			sizeOf(
-				(
-					await new Prunella({ estimator, pruningPolicy: policy }).prepare({
-						messages,
-						sessionId: "size",
-						config: undefined,
-					})
-				).messages,
+			estimator.count(
+				await new Prunella({ estimator, pruningPolicy: policy }).prepare({
+					messages,
+					sessionId: "size",
+					config: undefined,
+				}),
 			);
 		const prunedSize = await render(pruningPolicy);
 		const fullSize = await render(NO_PRUNING);
