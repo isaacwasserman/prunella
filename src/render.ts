@@ -1,16 +1,12 @@
+import type { UsageEstimator } from "@tokenxl/count";
 import type { ModelMessage } from "ai";
-import { estimateTokenCount } from "tokenx";
 import {
 	type CompactorSummary,
 	type PartSpan,
 	getPartIdsInSpan,
 	summaryToMessage,
 } from "./compaction";
-import {
-	type IdentifiableMessage,
-	type IdentifiablePart,
-	partTokens,
-} from "./utils";
+import type { IdentifiableMessage, IdentifiablePart } from "./utils";
 
 const RECALL_TOOL_NAME = "recall-pruned";
 
@@ -35,16 +31,6 @@ export function createPlaceholder(
 	return { type: "text", text };
 }
 
-/** Tokens of a part as rendered: the placeholder's size when it is pruned. */
-export function renderedPartTokens(
-	part: IdentifiablePart,
-	pruned: boolean,
-): number {
-	return pruned
-		? estimateTokenCount(JSON.stringify(createPlaceholder(part.id, part)))
-		: partTokens(part);
-}
-
 function toMessage(raw: ModelMessage, parts: RenderedPart[]): ModelMessage {
 	if (raw.role === "system") {
 		return {
@@ -55,6 +41,50 @@ function toMessage(raw: ModelMessage, parts: RenderedPart[]): ModelMessage {
 		};
 	}
 	return { ...raw, content: parts } as ModelMessage;
+}
+
+/** Tokens of a part as rendered: its placeholder's size when it is pruned. */
+export type PartSize = (part: IdentifiablePart, pruned: boolean) => number;
+
+/**
+ * Measure each part in a count of the whole conversation, once with its
+ * content and once with every part pruned. Message overhead is not in a part.
+ */
+export function measureParts(
+	estimator: UsageEstimator,
+	messages: IdentifiableMessage[],
+): PartSize {
+	const sizesOf = (rendered: ModelMessage[]) => {
+		const breakdown = estimator.count(
+			{ messages: rendered },
+			{ breakdown: true },
+		);
+		return new Map(
+			messages.flatMap((message, mi) =>
+				message.parts.map(
+					(part, pi) =>
+						[part.id, breakdown.messages[mi]?.parts[pi]?.total ?? 0] as const,
+				),
+			),
+		);
+	};
+	let original: Map<string, number> | undefined;
+	let placeholders: Map<string, number> | undefined;
+	return (part, pruned) => {
+		if (pruned) {
+			placeholders ??= sizesOf(
+				messages.map((message) =>
+					toMessage(
+						message.raw,
+						message.parts.map((part) => createPlaceholder(part.id, part)),
+					),
+				),
+			);
+			return placeholders.get(part.id) ?? 0;
+		}
+		original ??= sizesOf(messages.map((message) => message.raw));
+		return original.get(part.id) ?? 0;
+	};
 }
 
 export function renderMessages({

@@ -1,10 +1,20 @@
 import type { LanguageModelV4GenerateResult } from "@ai-sdk/provider";
+import { createUsageEstimator } from "@tokenxl/count";
 import type { ModelMessage } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 import type { CompactorStore, CompactorSummary } from "./compaction";
 import { Prunella } from "./index";
 import type { PruningPolicy } from "./pruning";
-import { attachIdsToMessages, partTokens } from "./utils";
+import { measureParts } from "./render";
+import { attachIdsToMessages } from "./utils";
+
+/** The token estimator for tests, with the default profile. */
+export const estimator = createUsageEstimator();
+
+/** Tokens of a request with these messages. */
+export function sizeOf(messages: ModelMessage[]): number {
+	return estimator.count({ messages });
+}
 
 export const PLACEHOLDER_PREFIX = "This part of the message has been pruned";
 
@@ -103,10 +113,12 @@ export function partsSizeOfLast(
 	messages: ModelMessage[],
 	count: number,
 ): number {
-	return attachIdsToMessages(messages)
+	const messagesWithIds = attachIdsToMessages(messages);
+	const partSize = measureParts(estimator, messagesWithIds);
+	return messagesWithIds
 		.slice(-count)
 		.flatMap((message) => message.parts)
-		.reduce((total, part) => total + partTokens(part), 0);
+		.reduce((total, part) => total + partSize(part, false), 0);
 }
 
 /** The call IDs of the tool results that were pruned. */
@@ -150,7 +162,7 @@ export async function prune(
 	messages: ModelMessage[],
 	pruningPolicy: PruningPolicy,
 ) {
-	return new Prunella({ pruningPolicy }).prepare({
+	return new Prunella({ estimator, pruningPolicy }).prepare({
 		messages,
 		sessionId: "session",
 		config: undefined,

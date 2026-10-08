@@ -1,10 +1,11 @@
+import type { UsageEstimator } from "@tokenxl/count";
 import { type ModelMessage, type ToolCallPart, jsonSchema, tool } from "ai";
+import { measureParts } from "./render";
 import {
 	type IdentifiableMessage,
 	type TokensAfter,
 	getMessageByIndex,
 	getPartByIndex,
-	partTokens,
 	stripIdsFromMessages,
 	tokensAfterParts,
 } from "./utils";
@@ -212,9 +213,14 @@ function collectPressureConditions(policy: PruningPolicy): PressureCondition[] {
 export class Pruner {
 	private pruningPolicy: PruningPolicy;
 	private pressureConditions: PressureCondition[];
+	private estimator: UsageEstimator;
 
-	constructor(args: { pruningPolicy: PruningPolicy }) {
+	constructor(args: {
+		pruningPolicy: PruningPolicy;
+		estimator: UsageEstimator;
+	}) {
 		this.pruningPolicy = args.pruningPolicy;
+		this.estimator = args.estimator;
 		this.pressureConditions = collectPressureConditions(args.pruningPolicy);
 	}
 
@@ -461,7 +467,12 @@ export class Pruner {
 		);
 		let sizes: TokensAfter | undefined;
 		const tokensAfter: TokensAfter = (messageIndex, partIndex) => {
-			sizes ??= tokensAfterParts(identifiableMessages, partTokens);
+			if (!sizes) {
+				const partSize = measureParts(this.estimator, identifiableMessages);
+				sizes = tokensAfterParts(identifiableMessages, (part) =>
+					partSize(part, false),
+				);
+			}
 			return sizes(messageIndex, partIndex);
 		};
 		const chosen = this.choosePressureParts({

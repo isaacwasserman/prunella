@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import type { ModelMessage } from "ai";
 import { Prunella } from "./index";
-import { PLACEHOLDER_PREFIX } from "./test-utils";
+import { PLACEHOLDER_PREFIX, estimator } from "./test-utils";
 
 function baseMessages(): ModelMessage[] {
 	return [
@@ -13,6 +13,7 @@ function baseMessages(): ModelMessage[] {
 
 test("prunes parts that match the policy and leaves others intact", async () => {
 	const prunella = new Prunella({
+		estimator,
 		pruningPolicy: { hasRole: "assistant" },
 	});
 
@@ -40,6 +41,7 @@ test("placeholder is permanent after recall request", async () => {
 	const messages = baseMessages();
 
 	const firstPass = await new Prunella({
+		estimator,
 		pruningPolicy: { hasRole: "assistant" },
 	}).prepare({ messages, sessionId: "test", config: undefined });
 
@@ -68,6 +70,7 @@ test("placeholder is permanent after recall request", async () => {
 	];
 
 	const secondPass = await new Prunella({
+		estimator,
 		pruningPolicy: { hasRole: "assistant" },
 	}).prepare({ messages: withRecall, sessionId: "test", config: undefined });
 
@@ -80,6 +83,7 @@ test("placeholder is permanent after recall request", async () => {
 
 test("recall tool returns original content", async () => {
 	const { tools, messages } = await new Prunella({
+		estimator,
 		pruningPolicy: { hasRole: "assistant" },
 	}).prepare({
 		messages: baseMessages(),
