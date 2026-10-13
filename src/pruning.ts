@@ -41,6 +41,15 @@ export function requestTools(tools: ToolSet | undefined): ToolSet {
 	return { ...tools, [RECALL_TOOL_NAME]: recallToolDefinition };
 }
 
+/** The messages of the request: the caller's instructions as one system message, then the messages. */
+export function requestMessages(
+	messages: ModelMessage[],
+	instructions: string | undefined,
+): ModelMessage[] {
+	if (instructions === undefined) return messages;
+	return [{ role: "system", content: instructions }, ...messages];
+}
+
 export type PartAge =
 	| {
 			turns: number;

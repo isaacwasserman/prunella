@@ -5,6 +5,7 @@ import { Prunella } from "./index";
 import type { PruningPolicy } from "./pruning";
 import {
 	CALLER_TOOLS,
+	INSTRUCTIONS,
 	NO_PRUNING,
 	PLACEHOLDER_PREFIX,
 	RECALL_TOOLS,
@@ -1092,6 +1093,45 @@ describe("compactor hooks", () => {
 			}),
 		);
 		expect(Object.keys(result.tools)).not.toContain("search");
+	});
+
+	test("counts the instructions toward compactionThreshold as one system message", async () => {
+		const messages = longConversation(10);
+		const onCompactStart = mock(async (_: any) => {});
+		const prunella = new Prunella({
+			estimator,
+			pruningPolicy: NO_PRUNING,
+			compaction: {
+				enabled: true,
+				store: createInMemoryStore(),
+				model: makeMockModel(),
+				policy: {
+					compactionThreshold: sizeOf(messages) + 1,
+					minCompactableSpan: 100,
+					maxIterations: 1,
+				},
+				hooks: { onCompactStart },
+			},
+		});
+
+		await prunella.prepare({
+			messages,
+			sessionId: "instructions-without",
+			config: undefined,
+		});
+		expect(onCompactStart).not.toHaveBeenCalled();
+
+		const result = await prunella.prepare({
+			messages,
+			instructions: INSTRUCTIONS,
+			sessionId: "instructions-with",
+			config: undefined,
+		});
+		expect(onCompactStart).toHaveBeenCalledTimes(1);
+		expect(onCompactStart.mock.calls[0]![0].estimatedTokens).toBe(
+			sizeOf([{ role: "system", content: INSTRUCTIONS }, ...messages]),
+		);
+		expect(JSON.stringify(result.messages)).not.toContain(INSTRUCTIONS);
 	});
 
 	test("counts recall-pruned toward compactionThreshold", async () => {

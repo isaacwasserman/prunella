@@ -24,12 +24,14 @@ const prunella = new Prunella({
 const { messages, tools } = await prunella.prepare({
 	messages: conversation,
 	tools: myTools, // optional. Prunella only counts their tokens.
+	instructions: myInstructions, // optional. Prunella only counts their tokens.
 	sessionId: "session-1",
 	config: undefined,
 });
 
 await generateText({
 	model,
+	instructions: myInstructions,
 	messages,
 	tools: { ...myTools, ...prunella.tools, ...tools },
 });
@@ -38,6 +40,8 @@ await generateText({
 `estimator` counts tokens. Make it with `createUsageEstimator` from [`@tokenxl/count`](https://github.com/isaacwasserman/tokenx/tree/main/packages/count), with the profile of the model that gets the messages. Prunella counts the whole message array as one request, so message overhead is in the count. A part's size is its share of that count.
 
 `prepare` also takes the `tools` that you send with the messages. Prunella adds their definitions to the count of the whole request (the `hasPressure` budget, `compactionThreshold`, and the `estimatedTokens` of the hooks). Prunella does not change or return these tools. The count always includes `recall-pruned`.
+
+`prepare` also takes the `instructions` that you send with the messages, as text. Prunella counts them as one system message before the messages, in the same counts as `tools`. Prunella does not add the instructions to the messages that it returns.
 
 `prepare` replaces each pruned part with a placeholder that holds a `pruneId`. `prunella.tools` contains `recall-pruned`, which returns the original content of a part. Each Prunella instance has one `recall-pruned` tool, so you can give it to an agent one time. Send it with every request. The tool keeps the content of the 10,000 parts that `prepare` pruned most recently, for all sessions. Part IDs come from the content of the conversation, so the same conversation always gets the same IDs.
 

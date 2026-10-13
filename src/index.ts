@@ -12,6 +12,7 @@ import {
 	type PressureMeasure,
 	Pruner,
 	type PruningPolicy,
+	requestMessages,
 	requestTools,
 } from "./pruning";
 import { measureParts, renderMessages } from "./render";
@@ -34,11 +35,13 @@ function measureRendered({
 	messagesWithIds,
 	existingSummaries,
 	tools,
+	instructions,
 }: {
 	estimator: UsageEstimator;
 	messagesWithIds: IdentifiableMessage[];
 	existingSummaries: CompactorSummary[];
 	tools: ToolSet | undefined;
+	instructions: string | undefined;
 }): PressureMeasure {
 	const parts = new Map(
 		messagesWithIds.flatMap((message) =>
@@ -56,11 +59,14 @@ function measureRendered({
 	return {
 		size: (mask) =>
 			estimator.count({
-				messages: renderMessages({
-					messages: messagesWithIds,
-					mask,
-					summaries: existingSummaries,
-				}),
+				messages: requestMessages(
+					renderMessages({
+						messages: messagesWithIds,
+						mask,
+						summaries: existingSummaries,
+					}),
+					instructions,
+				),
 				tools: requestTools(tools),
 			}),
 		savings: (partId) => {
@@ -120,6 +126,7 @@ export class Prunella<TRuntimeConfig extends RuntimeConfig = undefined> {
 	public async prepare({
 		messages,
 		tools,
+		instructions,
 		sessionId,
 		config,
 	}: {
@@ -130,6 +137,12 @@ export class Prunella<TRuntimeConfig extends RuntimeConfig = undefined> {
 		 * together with `recall-pruned`.
 		 */
 		tools?: ToolSet;
+		/**
+		 * The instructions sent with the messages. They are counted as one system
+		 * message before the messages, and only add to the token counts of the
+		 * whole request, the same as `tools`.
+		 */
+		instructions?: string;
 		sessionId: string;
 		config: TRuntimeConfig;
 	}) {
@@ -150,6 +163,7 @@ export class Prunella<TRuntimeConfig extends RuntimeConfig = undefined> {
 					messagesWithIds,
 					existingSummaries: summaries,
 					tools,
+					instructions,
 				}),
 			});
 		let { mask } = pruneWith(existingSummaries);
@@ -161,6 +175,7 @@ export class Prunella<TRuntimeConfig extends RuntimeConfig = undefined> {
 					mask,
 					existingSummaries,
 					tools: requestTools(tools),
+					instructions,
 					sessionId,
 					config,
 				})

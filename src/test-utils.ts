@@ -34,6 +34,9 @@ export const CALLER_TOOLS: ToolSet = {
 	}),
 };
 
+/** Instructions that the caller sends with the messages. */
+export const INSTRUCTIONS = `You are a research assistant. ${"Cite each source. ".repeat(20)}`;
+
 export const PLACEHOLDER_PREFIX = "This part of the message has been pruned";
 
 /** A pruning policy that prunes nothing. */
@@ -180,11 +183,13 @@ export async function prune(
 	messages: ModelMessage[],
 	pruningPolicy: PruningPolicy,
 	tools?: ToolSet,
+	instructions?: string,
 ) {
 	const prunella = new Prunella({ estimator, pruningPolicy });
 	const result = await prunella.prepare({
 		messages,
 		tools,
+		instructions,
 		sessionId: "session",
 		config: undefined,
 	});

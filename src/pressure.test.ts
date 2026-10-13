@@ -4,6 +4,7 @@ import { Prunella } from "./index";
 import type { PruningPolicy } from "./pruning";
 import {
 	CALLER_TOOLS,
+	INSTRUCTIONS,
 	NO_PRUNING,
 	RECALL_TOOLS,
 	createInMemoryStore,
@@ -70,6 +71,32 @@ describe("hasPressure", () => {
 			estimator.count({
 				messages: withTools.messages,
 				tools: { ...CALLER_TOOLS, ...withTools.tools },
+			}),
+		).toBeLessThanOrEqual(budget);
+	});
+
+	test("counts the instructions as one system message", async () => {
+		const messages = longTurn(10);
+		const budget = sizeOf(messages) + 1;
+
+		const withoutInstructions = await prune(messages, pressurePolicy(budget));
+		const withInstructions = await prune(
+			messages,
+			pressurePolicy(budget),
+			undefined,
+			INSTRUCTIONS,
+		);
+
+		expect(prunedCallIds(withoutInstructions.messages)).toEqual([]);
+		expect(prunedCallIds(withInstructions.messages).length).toBeGreaterThan(0);
+		expect(withInstructions.messages[0]?.role).not.toBe("system");
+		expect(
+			estimator.count({
+				messages: [
+					{ role: "system", content: INSTRUCTIONS },
+					...withInstructions.messages,
+				],
+				tools: withInstructions.tools,
 			}),
 		).toBeLessThanOrEqual(budget);
 	});
