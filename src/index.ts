@@ -53,8 +53,6 @@ function measureRendered({
 		),
 	);
 	const partSize = measureParts(estimator, messagesWithIds);
-	const toolsSize = (mask: Set<string>) =>
-		estimator.count({ messages: [], tools: requestTools(tools, mask) });
 	return {
 		size: (mask) =>
 			estimator.count({
@@ -63,9 +61,8 @@ function measureRendered({
 					mask,
 					summaries: existingSummaries,
 				}),
-				tools: requestTools(tools, mask),
+				tools: requestTools(tools),
 			}),
-		pruneOverhead: toolsSize(new Set(["pruned"])) - toolsSize(new Set()),
 		savings: (partId) => {
 			const part = parts.get(partId);
 			if (!part || covered.has(partId)) return 0;
@@ -78,6 +75,14 @@ export class Prunella<TRuntimeConfig extends RuntimeConfig = undefined> {
 	private pruner: Pruner;
 	private compactor: Compactor<TRuntimeConfig> | undefined;
 	private estimator: UsageEstimator;
+
+	/**
+	 * `recall-pruned`, which returns the original content of a pruned part.
+	 * Send it with every request. Token counts always include it.
+	 */
+	public get tools() {
+		return this.pruner.tools;
+	}
 
 	constructor(args: {
 		/**
@@ -122,7 +127,7 @@ export class Prunella<TRuntimeConfig extends RuntimeConfig = undefined> {
 		/**
 		 * The tools sent with the messages. They only add to the token counts of
 		 * the whole request (`hasPressure` budgets and `compactionThreshold`),
-		 * together with `recall-pruned` when a part is pruned.
+		 * together with `recall-pruned`.
 		 */
 		tools?: ToolSet;
 		sessionId: string;
@@ -147,7 +152,7 @@ export class Prunella<TRuntimeConfig extends RuntimeConfig = undefined> {
 					tools,
 				}),
 			});
-		let { mask, tools: pruningTools } = pruneWith(existingSummaries);
+		let { mask } = pruneWith(existingSummaries);
 
 		const compaction = this.compactor
 			? await this.compactor.prepare({
@@ -155,7 +160,7 @@ export class Prunella<TRuntimeConfig extends RuntimeConfig = undefined> {
 					messagesWithIds,
 					mask,
 					existingSummaries,
-					tools: requestTools(tools, mask),
+					tools: requestTools(tools),
 					sessionId,
 					config,
 				})
@@ -167,7 +172,7 @@ export class Prunella<TRuntimeConfig extends RuntimeConfig = undefined> {
 			existingSummaries.map((summary) => summary.id).join();
 		if (summariesChanged) {
 			// Choose pressure parts again, so parts that a summary now covers do not cause more pruning.
-			({ mask, tools: pruningTools } = pruneWith(summaries));
+			({ mask } = pruneWith(summaries));
 		}
 
 		const rendered = renderMessages({
@@ -178,11 +183,8 @@ export class Prunella<TRuntimeConfig extends RuntimeConfig = undefined> {
 
 		return {
 			messages: rendered,
-			/** `recall-pruned` when a part was pruned, and the compactor tools when summaries exist. */
-			tools: {
-				...(mask.size > 0 ? pruningTools : {}),
-				...(compaction && summaries.length > 0 ? compaction.tools : {}),
-			},
+			/** The compactor tools when summaries exist. `recall-pruned` is in `Prunella.tools`. */
+			tools: compaction && summaries.length > 0 ? compaction.tools : {},
 		};
 	}
 }

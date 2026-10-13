@@ -7,6 +7,7 @@ import {
 	CALLER_TOOLS,
 	NO_PRUNING,
 	PLACEHOLDER_PREFIX,
+	RECALL_TOOLS,
 	createInMemoryStore,
 	estimator,
 	longTurn,
@@ -221,7 +222,7 @@ describe("edge cases: pruning", () => {
 			estimator,
 			pruningPolicy: { hasRole: "assistant" },
 		});
-		const { tools } = await prunella.prepare({
+		await prunella.prepare({
 			messages: [
 				{ role: "user", content: "hi" },
 				{
@@ -232,7 +233,7 @@ describe("edge cases: pruning", () => {
 			sessionId: "test",
 			config: undefined,
 		});
-		const result = await tools["recall-pruned"]!.execute(
+		const result = await prunella.tools["recall-pruned"].execute(
 			{ pruneId: "nonexistent" },
 			execOpts() as never,
 		);
@@ -269,7 +270,7 @@ describe("edge cases: pruning", () => {
 				],
 			},
 		];
-		const { messages, tools } = await prunella.prepare({
+		const { messages } = await prunella.prepare({
 			messages: input,
 			sessionId: "test",
 			config: undefined,
@@ -282,7 +283,7 @@ describe("edge cases: pruning", () => {
 		if (!prunedCall?.input.pruned) throw new Error("expected placeholder");
 
 		const pruneId = pruneIdFrom(prunedCall.input.pruned);
-		const result = await tools["recall-pruned"]!.execute(
+		const result = await prunella.tools["recall-pruned"].execute(
 			{ pruneId },
 			execOpts() as never,
 		);
@@ -846,7 +847,7 @@ describe("edge cases: render step", () => {
 			estimator,
 			pruningPolicy: { hasRole: "assistant" },
 		});
-		const { messages, tools } = await prunella.prepare({
+		const { messages } = await prunella.prepare({
 			messages: [
 				{ role: "user", content: "hi" },
 				{
@@ -872,11 +873,11 @@ describe("edge cases: render step", () => {
 
 		expect(ids[0]).not.toBe(ids[1]);
 
-		const r1 = await tools["recall-pruned"]!.execute(
+		const r1 = await prunella.tools["recall-pruned"].execute(
 			{ pruneId: ids[0] },
 			execOpts() as never,
 		);
-		const r2 = await tools["recall-pruned"]!.execute(
+		const r2 = await prunella.tools["recall-pruned"].execute(
 			{ pruneId: ids[1] },
 			execOpts() as never,
 		);
@@ -1085,12 +1086,15 @@ describe("compactor hooks", () => {
 		});
 		expect(onCompactStart).toHaveBeenCalledTimes(1);
 		expect(onCompactStart.mock.calls[0]![0].estimatedTokens).toBe(
-			estimator.count({ messages, tools: CALLER_TOOLS }),
+			estimator.count({
+				messages,
+				tools: { ...CALLER_TOOLS, ...RECALL_TOOLS },
+			}),
 		);
 		expect(Object.keys(result.tools)).not.toContain("search");
 	});
 
-	test("counts recall-pruned toward compactionThreshold when a part is pruned", async () => {
+	test("counts recall-pruned toward compactionThreshold", async () => {
 		const messages = longConversation(10);
 		const pruningPolicy: PruningPolicy = { hasRole: "assistant" };
 		const pruned = await new Prunella({ estimator, pruningPolicy }).prepare({
@@ -1116,9 +1120,8 @@ describe("compactor hooks", () => {
 			},
 		}).prepare({ messages, sessionId: "recall-size", config: undefined });
 
-		expect(Object.keys(pruned.tools)).toEqual(["recall-pruned"]);
 		expect(onCompactStart.mock.calls[0]![0].estimatedTokens).toBe(
-			estimator.count(pruned),
+			estimator.count({ messages: pruned.messages, tools: RECALL_TOOLS }),
 		);
 	});
 
@@ -1544,7 +1547,7 @@ describe("compaction policy", () => {
 		);
 	});
 
-	test("offers each recall tool only when there is something to recall", async () => {
+	test("offers the compactor tools only when summaries exist", async () => {
 		const store = createInMemoryStore();
 		const quiet = await compactingPrunella({
 			store,
@@ -1564,8 +1567,8 @@ describe("compaction policy", () => {
 			sessionId: "tools",
 			config: undefined,
 		});
-		// TODO: Expect "recall-summarized" too when the compactor offers it again.
-		expect(Object.keys(busy.tools).sort()).toEqual(["recall-pruned"]);
+		// TODO: Expect "recall-summarized" when the compactor offers it again.
+		expect(Object.keys(busy.tools)).toEqual([]);
 	});
 });
 
