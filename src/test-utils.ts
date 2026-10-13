@@ -34,6 +34,18 @@ export const CALLER_TOOLS: ToolSet = {
 	}),
 };
 
+/** Instructions that the caller sends with the messages. */
+export const INSTRUCTIONS = `You are a research assistant. ${"Cite each source. ".repeat(20)}`;
+
+/** What the caller sends with the messages. Prunella only counts it. */
+export type PrepareRequest = { tools?: ToolSet; instructions?: string };
+
+/** One case for each part of a `PrepareRequest`. */
+export const REQUEST_CASES: [string, PrepareRequest][] = [
+	["tools", { tools: CALLER_TOOLS }],
+	["instructions", { instructions: INSTRUCTIONS }],
+];
+
 export const PLACEHOLDER_PREFIX = "This part of the message has been pruned";
 
 /** A pruning policy that prunes nothing. */
@@ -179,12 +191,12 @@ export function resultIds(messages: ModelMessage[]): string[] {
 export async function prune(
 	messages: ModelMessage[],
 	pruningPolicy: PruningPolicy,
-	tools?: ToolSet,
+	request: PrepareRequest = {},
 ) {
 	const prunella = new Prunella({ estimator, pruningPolicy });
 	const result = await prunella.prepare({
 		messages,
-		tools,
+		...request,
 		sessionId: "session",
 		config: undefined,
 	});

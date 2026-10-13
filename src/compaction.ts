@@ -11,7 +11,7 @@ import {
 import dedent from "dedent";
 import { nanoid } from "nanoid";
 import type { CompactorHooks } from "./hooks";
-import { type PartAge, partIsOlderThan } from "./pruning";
+import { type PartAge, partIsOlderThan, requestMessages } from "./pruning";
 import { measureParts, renderMessages } from "./render";
 import type { RuntimeConfig } from "./runtime-config";
 import {
@@ -553,6 +553,7 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 		mask = new Set<string>(),
 		existingSummaries: loadedSummaries,
 		tools,
+		instructions,
 		sessionId,
 		config,
 	}: {
@@ -565,6 +566,8 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 		existingSummaries?: CompactorSummary[];
 		/** The tools sent with the messages. They only add to the conversation's token count. */
 		tools?: ToolSet;
+		/** The instructions sent with the messages. They count as one system message before the messages. */
+		instructions?: string;
 		sessionId: string;
 		config: TRuntimeConfig;
 	}) {
@@ -572,11 +575,14 @@ export class Compactor<TRuntimeConfig extends RuntimeConfig = undefined> {
 			existingSummaries: CompactorSummary[],
 		) =>
 			this.estimator.count({
-				messages: renderMessages({
-					messages: messagesWithIds,
-					mask,
-					summaries: existingSummaries,
-				}),
+				messages: requestMessages(
+					renderMessages({
+						messages: messagesWithIds,
+						mask,
+						summaries: existingSummaries,
+					}),
+					instructions,
+				),
 				tools,
 			});
 

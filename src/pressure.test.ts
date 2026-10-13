@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import type { ModelMessage } from "ai";
 import { Prunella } from "./index";
-import type { PruningPolicy } from "./pruning";
+import { type PruningPolicy, requestMessages } from "./pruning";
 import {
-	CALLER_TOOLS,
 	NO_PRUNING,
 	RECALL_TOOLS,
+	REQUEST_CASES,
 	createInMemoryStore,
 	estimator,
 	longTurn,
@@ -53,26 +53,25 @@ describe("hasPressure", () => {
 		expect(estimator.count(result)).toBeLessThanOrEqual(budget);
 	});
 
-	test("counts the tools that are sent with the messages", async () => {
-		const messages = longTurn(10);
-		const budget = sizeOf(messages) + 1;
+	test.each(REQUEST_CASES)(
+		"counts the %s that are sent with the messages",
+		async (_, request) => {
+			const messages = longTurn(10);
+			const budget = sizeOf(messages) + 1;
 
-		const withoutTools = await prune(messages, pressurePolicy(budget));
-		const withTools = await prune(
-			messages,
-			pressurePolicy(budget),
-			CALLER_TOOLS,
-		);
+			const without = await prune(messages, pressurePolicy(budget));
+			const result = await prune(messages, pressurePolicy(budget), request);
 
-		expect(prunedCallIds(withoutTools.messages)).toEqual([]);
-		expect(prunedCallIds(withTools.messages).length).toBeGreaterThan(0);
-		expect(
-			estimator.count({
-				messages: withTools.messages,
-				tools: { ...CALLER_TOOLS, ...withTools.tools },
-			}),
-		).toBeLessThanOrEqual(budget);
-	});
+			expect(prunedCallIds(without.messages)).toEqual([]);
+			expect(prunedCallIds(result.messages).length).toBeGreaterThan(0);
+			expect(
+				estimator.count({
+					messages: requestMessages(result.messages, request.instructions),
+					tools: { ...request.tools, ...result.tools },
+				}),
+			).toBeLessThanOrEqual(budget);
+		},
+	);
 
 	test("counts the recall tool in every request", async () => {
 		const messages = longTurn(10);
