@@ -33,8 +33,7 @@ test("prunes parts that match the policy and leaves others intact", async () => 
 	expect(assistantPart.text.startsWith(PLACEHOLDER_PREFIX)).toBe(true);
 
 	expect(messages[0]).toEqual({ role: "user", content: "hello" });
-
-	expect(tools).toHaveProperty("recall-pruned");
+	expect(tools).toEqual({});
 });
 
 test("placeholder is permanent after recall request", async () => {
@@ -82,10 +81,11 @@ test("placeholder is permanent after recall request", async () => {
 });
 
 test("recall tool returns original content", async () => {
-	const { tools, messages } = await new Prunella({
+	const prunella = new Prunella({
 		estimator,
 		pruningPolicy: { hasRole: "assistant" },
-	}).prepare({
+	});
+	const { messages } = await prunella.prepare({
 		messages: baseMessages(),
 		sessionId: "test",
 		config: undefined,
@@ -100,10 +100,48 @@ test("recall tool returns original content", async () => {
 	)?.[1];
 	expect(pruneId).toBeString();
 
-	const recallTool = tools["recall-pruned"]!;
+	const recallTool = prunella.tools["recall-pruned"];
 	const result = await recallTool.execute({ pruneId }, {
 		toolCallId: "call-1",
 		messages: [],
 	} as unknown as Parameters<typeof recallTool.execute>[1]);
 	expect(result).toBe("hi there");
+});
+
+test("one recall tool recalls parts from each prepare call", async () => {
+	const prunella = new Prunella({
+		estimator,
+		pruningPolicy: { hasRole: "assistant" },
+	});
+	const recallTool = prunella.tools["recall-pruned"];
+	const pruneIdOf = async (reply: string, sessionId: string) => {
+		const { messages } = await prunella.prepare({
+			messages: [
+				{ role: "user", content: "hello" },
+				{ role: "assistant", content: [{ type: "text", text: reply }] },
+			],
+			sessionId,
+			config: undefined,
+		});
+		const content = messages[1]?.content;
+		if (!Array.isArray(content) || content[0]?.type !== "text") {
+			throw new Error("expected a pruned text part");
+		}
+		return content[0].text.match(/pruneId "([A-Za-z0-9_-]{8})"/)?.[1];
+	};
+
+	const first = await pruneIdOf("first reply", "session-1");
+	const second = await pruneIdOf("second reply", "session-2");
+
+	expect(prunella.tools["recall-pruned"]).toBe(recallTool);
+	const options = {
+		toolCallId: "call-1",
+		messages: [],
+	} as unknown as Parameters<typeof recallTool.execute>[1];
+	expect(await recallTool.execute({ pruneId: first }, options)).toBe(
+		"first reply",
+	);
+	expect(await recallTool.execute({ pruneId: second }, options)).toBe(
+		"second reply",
+	);
 });

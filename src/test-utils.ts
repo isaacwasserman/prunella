@@ -11,9 +11,15 @@ import { attachIdsToMessages } from "./utils";
 /** The token estimator for tests, with the default profile. */
 export const estimator = createUsageEstimator();
 
-/** Tokens of a request with these messages. */
+/** `recall-pruned`, which every request sends. */
+export const RECALL_TOOLS: ToolSet = new Prunella({
+	estimator,
+	pruningPolicy: { hasRole: "never-matches" as never },
+}).tools;
+
+/** Tokens of a request with these messages and `recall-pruned`. */
 export function sizeOf(messages: ModelMessage[]): number {
-	return estimator.count({ messages });
+	return estimator.count({ messages, tools: RECALL_TOOLS });
 }
 
 /** Tools that the caller sends with the messages. */
@@ -175,10 +181,12 @@ export async function prune(
 	pruningPolicy: PruningPolicy,
 	tools?: ToolSet,
 ) {
-	return new Prunella({ estimator, pruningPolicy }).prepare({
+	const prunella = new Prunella({ estimator, pruningPolicy });
+	const result = await prunella.prepare({
 		messages,
 		tools,
 		sessionId: "session",
 		config: undefined,
 	});
+	return { ...result, tools: { ...result.tools, ...prunella.tools } };
 }

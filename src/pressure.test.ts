@@ -5,6 +5,7 @@ import type { PruningPolicy } from "./pruning";
 import {
 	CALLER_TOOLS,
 	NO_PRUNING,
+	RECALL_TOOLS,
 	createInMemoryStore,
 	estimator,
 	longTurn,
@@ -36,7 +37,6 @@ describe("hasPressure", () => {
 		const result = await prune(messages, pressurePolicy(sizeOf(messages) + 1));
 
 		expect(prunedCallIds(result.messages)).toEqual([]);
-		expect(Object.keys(result.tools)).toEqual([]);
 	});
 
 	test("prunes the oldest matching parts until the conversation is back within budget", async () => {
@@ -51,7 +51,6 @@ describe("hasPressure", () => {
 			Array.from({ length: pruned.length }, (_, step) => `call-${step}`),
 		);
 		expect(estimator.count(result)).toBeLessThanOrEqual(budget);
-		expect(Object.keys(result.tools)).toEqual(["recall-pruned"]);
 	});
 
 	test("counts the tools that are sent with the messages", async () => {
@@ -73,17 +72,16 @@ describe("hasPressure", () => {
 				tools: { ...CALLER_TOOLS, ...withTools.tools },
 			}),
 		).toBeLessThanOrEqual(budget);
-		expect(Object.keys(withTools.tools)).toEqual(["recall-pruned"]);
 	});
 
-	test("counts the recall tool that pruning adds", async () => {
+	test("counts the recall tool in every request", async () => {
 		const messages = longTurn(10);
-		const budget = sizeOf(messages) - 1;
+		const budget = estimator.count({ messages });
 
 		const result = await prune(messages, pressurePolicy(budget, 0));
 
-		const recallTool = estimator.count({ messages: [], tools: result.tools });
-		expect(recallTool).toBeGreaterThan(estimator.count({ messages: [] }));
+		expect(sizeOf(messages)).toBeGreaterThan(budget);
+		expect(prunedCallIds(result.messages).length).toBeGreaterThan(0);
 		expect(estimator.count(result)).toBeLessThanOrEqual(budget);
 	});
 
@@ -264,7 +262,9 @@ describe("pressure after compaction", () => {
 		}).prepare({ messages, sessionId: "session", config: undefined });
 
 		expect(userTexts(result.messages)[1]).toContain("<Summary");
-		expect(estimator.count(result)).toBeLessThanOrEqual(budget);
+		expect(
+			estimator.count({ messages: result.messages, tools: RECALL_TOOLS }),
+		).toBeLessThanOrEqual(budget);
 		expect(prunedCallIds(result.messages)).toEqual([]);
 		expect(Object.keys(result.tools)).toEqual([]);
 	});

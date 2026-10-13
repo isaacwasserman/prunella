@@ -18,6 +18,9 @@ import {
 
 const RECALL_TOOL_NAME = "recall-pruned";
 
+/** Pruned parts that `recall-pruned` keeps. The oldest parts go first. */
+const MAX_RECALLABLE_PARTS = 10_000;
+
 /** The definition of `recall-pruned`, without `execute`. Token counts use it. */
 const recallToolDefinition = tool({
 	description: "Recall pruned part.",
@@ -33,14 +36,9 @@ const recallToolDefinition = tool({
 	}),
 });
 
-/** The tools of the request: `recall-pruned` is sent when a part is pruned. */
-export function requestTools(
-	tools: ToolSet | undefined,
-	mask: Set<string>,
-): ToolSet | undefined {
-	return mask.size > 0
-		? { ...tools, [RECALL_TOOL_NAME]: recallToolDefinition }
-		: tools;
+/** The tools of the request: the caller's tools and `recall-pruned`. */
+export function requestTools(tools: ToolSet | undefined): ToolSet {
+	return { ...tools, [RECALL_TOOL_NAME]: recallToolDefinition };
 }
 
 export type PartAge =
@@ -80,8 +78,6 @@ export type PressureCondition = {
 export type PressureMeasure = {
 	/** Tokens of the rendered request with `mask` pruned. */
 	size: (mask: Set<string>) => number;
-	/** Tokens that the first pruned part adds: the `recall-pruned` definition. */
-	pruneOverhead: number;
 	/** Tokens saved by pruning one part. */
 	savings: (partId: string) => number;
 };
@@ -247,6 +243,18 @@ export class Pruner {
 	private pruningPolicy: PruningPolicy;
 	private pressureConditions: PressureCondition[];
 	private estimator: UsageEstimator;
+	/** Original content of pruned parts, by pruneId, oldest first. */
+	private recallable = new Map<string, string>();
+
+	/** `recall-pruned`. It returns the content of a part that `prepare` pruned. */
+	public readonly tools = {
+		[RECALL_TOOL_NAME]: tool({
+			...recallToolDefinition,
+			execute: (input) =>
+				this.recallable.get((input as { pruneId: string }).pruneId) ??
+				"Part not found or not pruned.",
+		}),
+	};
 
 	constructor(args: {
 		pruningPolicy: PruningPolicy;
@@ -458,9 +466,7 @@ export class Pruner {
 			const mask = currentMask();
 			const size = measure.size(mask);
 			if (size <= condition.budget) continue;
-			// When nothing is pruned yet, pruning also adds the recall tool.
-			const over =
-				size - condition.budget + (mask.size === 0 ? measure.pruneOverhead : 0);
+			const over = size - condition.budget;
 			const band =
 				(condition.bufferFactor ?? DEFAULT_PRESSURE_BUFFER_FACTOR) *
 				condition.budget;
@@ -493,7 +499,6 @@ export class Pruner {
 	}) {
 		const messages = stripIdsFromMessages(identifiableMessages);
 		const mask = new Set<string>();
-		const originalContent = new Map<string, string>();
 		const parts = identifiableMessages.flatMap((message, messageIndex) =>
 			message.parts.map((part, partIndex) => ({
 				messageIndex,
@@ -521,7 +526,9 @@ export class Pruner {
 		for (const part of parts) {
 			if (this.partIsPruned({ messages, ...part, chosen, tokensAfter })) {
 				mask.add(part.partId);
-				originalContent.set(
+				// Put the part last, so the parts that are pruned now are kept longest.
+				this.recallable.delete(part.partId);
+				this.recallable.set(
 					part.partId,
 					serializePart(
 						getPartByIndex({
@@ -533,21 +540,11 @@ export class Pruner {
 				);
 			}
 		}
+		for (const partId of this.recallable.keys()) {
+			if (this.recallable.size <= MAX_RECALLABLE_PARTS) break;
+			this.recallable.delete(partId);
+		}
 
-		const recallTool = tool({
-			...recallToolDefinition,
-			execute: (input) => {
-				const content = originalContent.get(
-					(input as { pruneId: string }).pruneId,
-				);
-				if (!content) return "Part not found or not pruned.";
-				return content;
-			},
-		});
-
-		return {
-			mask,
-			tools: { [RECALL_TOOL_NAME]: recallTool },
-		};
+		return { mask };
 	}
 }
