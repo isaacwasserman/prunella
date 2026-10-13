@@ -1,5 +1,13 @@
 # prunella
 
+## 0.3.0
+
+### Minor Changes
+
+- cd87f8b: `prepare` takes optional `instructions`, as text. Token counts of the whole request (the `hasPressure` budget, `compactionThreshold`, and the `estimatedTokens` of the hooks) count them as one system message before the messages. `prepare` does not return the instructions.
+- d8f012e: Each Prunella instance now has one `recall-pruned` tool, in `prunella.tools`. `prepare` does not return `recall-pruned` now. Send `prunella.tools` with every request. Token counts always include `recall-pruned`, also when no part is pruned. The tool keeps the content of the 10,000 parts that were pruned most recently.
+- 1430e24: The `@tokenxl/count` peer dependency is now `^0.1.0`, its first stable release. Install `@tokenxl/count@^0.1.0` with this version.
+
 ## 0.2.0
 
 ### Minor Changes
